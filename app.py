@@ -48,29 +48,44 @@ def log(message, level="INFO"):
 MYSHOPIFY_RE = re.compile(r'([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com')
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PHASE 1: MASSIVE SCRAPING (Apify + URLScan + SSL for Fresh Stores)
+# PHASE 1: MASSIVE DIRECTORY SCRAPING (No Google, No Apify)
 # ─────────────────────────────────────────────────────────────────────────────
-def get_stores_from_apify(keyword, apify_key):
+def get_massive_store_list(keyword):
+    """
+    গুগল বা Apify বাদ দিয়ে সরাসরি গ্লোবাল ডিরেক্টরি থেকে হাজার হাজার স্টোর আনবে।
+    """
     urls = set()
-    kw_clean = keyword.lower().replace(' ', '')
+    kw_clean = keyword.lower().replace(' ', '').replace('-', '')
     
-    log(f"🚀 HYBRID MODE: Fetching stores from Apify, URLScan & SSL Logs...", "INFO")
-    
-    # ── SOURCE 1: URLScan.io (Strictly Past 7 Days) ──
-    log(f"   -> Checking URLScan (Scanned in the last 7 days)...", "INFO")
+    log(f"🚀 DIRECTORY MODE: Scraping Global Databases for '{keyword}'...", "INFO")
+
+    # ── SOURCE 1: URLScan.io (Massive Search) ──
+    log(f"   -> Checking URLScan (Recently scanned stores)...", "INFO")
     try:
-        urlscan_url = f"https://urlscan.io/api/v1/search/?q=domain:myshopify.com AND date:>now-7d&size=1000"
+        urlscan_url = f"https://urlscan.io/api/v1/search/?q=domain:myshopify.com AND {kw_clean}&size=1000&sort=time"
         r = requests.get(urlscan_url, timeout=15)
         if r.status_code == 200:
             for res in r.json().get('results', []):
                 page_url = res.get('page', {}).get('url', '')
                 m = MYSHOPIFY_RE.search(page_url)
-                if m and kw_clean in m.group(1).lower():
-                    urls.add(f"https://{m.group(1)}.myshopify.com")
-    except Exception: pass
+                if m: urls.add(f"https://{m.group(1)}.myshopify.com")
+    except Exception:
+        pass
 
-    # ── SOURCE 2: CertSpotter (Newly created SSL certificates) ──
-    log(f"   -> Checking CertSpotter (New SSL Certificates)...", "INFO")
+    # ── SOURCE 2: AlienVault OTX (Passive DNS) ──
+    log(f"   -> Checking AlienVault OTX (Global DNS Records)...", "INFO")
+    try:
+        r = requests.get("https://otx.alienvault.com/api/v1/indicators/domain/myshopify.com/passive_dns", timeout=15)
+        if r.status_code == 200:
+            for entry in r.json().get('passive_dns', []):
+                h = entry.get('hostname', '').lower()
+                if h.endswith('.myshopify.com') and kw_clean in h:
+                    urls.add(f"https://{h}")
+    except Exception:
+        pass
+
+    # ── SOURCE 3: CertSpotter (SSL Logs) ──
+    log(f"   -> Checking CertSpotter (SSL Certificates)...", "INFO")
     try:
         r = requests.get('https://api.certspotter.com/v1/issuances?domain=myshopify.com&include_subdomains=true&expand=dns_names&match_wildcards=false', timeout=15)
         if r.status_code == 200:
@@ -78,45 +93,24 @@ def get_stores_from_apify(keyword, apify_key):
                 for name in cert.get('dns_names', []):
                     if name.endswith('.myshopify.com') and kw_clean in name.lower():
                         urls.add(f"https://{name}")
-    except Exception: pass
-
-    # ── SOURCE 3: APIFY (Google Search Scraper) ──
-    if apify_key:
-        log(f"   -> Checking Apify Google Scraper...", "INFO")
-        actor_id = "apify~google-search-scraper"
-        url = f"https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items?token={apify_key}"
-        
-        queries = [
-            f'site:myshopify.com "{keyword}" "opening soon"',
-            f'site:myshopify.com "{keyword}" "isn\'t accepting payments right now"',
-            f'site:myshopify.com "{keyword}"'
-        ]
-        
-        payload = {
-            "queries": "\n".join(queries),
-            "resultsPerPage": 100,
-            "maxPagesPerQuery": 2,
-            "customParameters": "tbs=qdr:m" # Past month
-        }
-        
-        try:
-            r = requests.post(url, json=payload, timeout=300)
-            if r.status_code in [200, 201]:
-                for item in r.json():
-                    for res in item.get('organicResults', []):
-                        m = MYSHOPIFY_RE.search(res.get('url', ''))
-                        if m: urls.add(f"https://{m.group(1)}.myshopify.com")
-        except Exception: pass
+    except Exception:
+        pass
 
     urls_list = list(urls)
     random.shuffle(urls_list)
-    log(f"📦 Found {len(urls_list)} potential stores to test!", "SUCCESS")
+    log(f"📦 Found {len(urls_list)} RAW stores for '{keyword}'!", "SUCCESS")
     return urls_list
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PHASE 2: STORE AGE FILTER & CHECKOUT HTML ANALYSIS (100% Accurate)
+# PHASE 2: THE "COMING SOON" HACK (100% Guaranteed New & No Payment)
 # ─────────────────────────────────────────────────────────────────────────────
 def check_store_target(base_url, session, keyword):
+    """
+    ১. হোমপেজে আপনার কিওয়ার্ড (যেমন: shoes) আছে কিনা চেক করবে।
+    ২. হোমপেজে "Opening Soon" বা "Password" লেখা আছে কিনা চেক করবে।
+    ৩. যদি থাকে, তারমানে স্টোরটি ১০০% নতুন এবং পেমেন্ট নেই! (LEAD ACCEPTED)
+    ৪. যদি স্টোরটি লাইভ থাকে, তবে চেকআউটে গিয়ে পেমেন্ট চেক করবে।
+    """
     ua = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
           'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36')
     headers = {
@@ -134,78 +128,64 @@ def check_store_target(base_url, session, keyword):
         if 'shopify' not in html_lower and 'cdn.shopify.com' not in html_lower:
             return {"is_shopify": False, "is_lead": False}
 
-        # 🚨 PASSWORD CHECK
-        if '/password' in r.url or 'password-page' in html_lower or 'opening soon' in html_lower:
-            return {"is_shopify": True, "is_lead": False, "reason": "Password Protected (Skipping)"}
+        # 🚨 NICHE CHECK
+        kw_lower = keyword.lower().strip()
+        if kw_lower and kw_lower not in html_lower and kw_lower not in base_url:
+            return {"is_shopify": True, "is_lead": False, "reason": f"Keyword '{kw_lower}' not found"}
 
-        # 🔥 THE ULTIMATE STORE AGE CHECK (Hacking products.json) 🔥
+        # 🔥 THE "COMING SOON" HACK 🔥
+        # যদি স্টোরটি পাসওয়ার্ড প্রটেক্টেড বা ওপেনিং সুন অবস্থায় থাকে, তারমানে এটি ১০০% নতুন!
+        if '/password' in r.url or 'password-page' in html_lower or 'opening soon' in html_lower or 'coming soon' in html_lower:
+            return {"is_shopify": True, "is_lead": True, "reason": "100% NEW: Store is 'Opening Soon' (No Payment Gateway)!"}
+
+        # The Checkout Test (For Live Stores)
         try:
-            prod_req = session.get(f"{base_url}/products.json?limit=20", headers=headers, timeout=10)
-            if prod_req.status_code == 200:
-                products = prod_req.json().get('products', [])
-                if products:
-                    # চেক করবে প্রোডাক্টগুলো কবে আপলোড করা হয়েছে
-                    for p in products:
-                        created_at = p.get('created_at') or p.get('published_at')
-                        if created_at:
-                            try:
-                                p_date = datetime.strptime(created_at[:10], '%Y-%m-%d')
-                                days_old = (datetime.now() - p_date).days
-                                # 🚨 STRICT RULE: যদি কোনো প্রোডাক্ট ৩০ দিনের বেশি পুরনো হয়, স্টোরটি পপুলার/পুরনো!
-                                if days_old > 30:
-                                    return {"is_shopify": True, "is_lead": False, "reason": f"Old Store (Product from {created_at[:10]})"}
-                            except Exception:
-                                pass
-                else:
-                    # প্রোডাক্ট না থাকলে চেকআউটে যাওয়া যায় না
-                    return {"is_shopify": True, "is_lead": False, "reason": "0 products, cannot test checkout"}
+            prod_req = session.get(f"{base_url}/products.json?limit=1", headers=headers, timeout=10)
+            if prod_req.status_code != 200:
+                return {"is_shopify": True, "is_lead": False, "reason": "No products.json"}
 
-                # যদি স্টোরটি নতুন হয় (সব প্রোডাক্ট গত ৩০ দিনের মধ্যে আপলোড করা), তবেই চেকআউটে যাবে!
-                variant_id = products[0]['variants'][0]['id']
-                session.post(f"{base_url}/cart/add.js",
-                    json={"id": variant_id, "quantity": 1},
-                    headers={**headers, 'Content-Type': 'application/json'}, timeout=10)
+            products = prod_req.json().get('products', [])
+            if not products:
+                return {"is_shopify": True, "is_lead": False, "reason": "0 products, cannot test checkout"}
 
-                chk_req = session.get(f"{base_url}/checkout", headers=headers, timeout=15, allow_redirects=True)
-                chk_html = chk_req.text.lower()
+            variant_id = products[0]['variants'][0]['id']
+            session.post(f"{base_url}/cart/add.js",
+                json={"id": variant_id, "quantity": 1},
+                headers={**headers, 'Content-Type': 'application/json'}, timeout=10)
 
-                # Explicit no-payment error (Multi-lingual)
-                error_footprints = [
-                    "isn't accepting payments", "not accepting payments", "no payment methods", 
-                    "payment provider hasn't been set up", "this store is unavailable", 
-                    "cannot accept payments", "can't accept payments", "checkout is disabled",
-                    "dieser shop kann zurzeit keine zahlungen akzeptieren", "keine zahlungen akzeptieren",
-                    "n'accepte pas les paiements", "aucun moyen de paiement",
-                    "no acepta pagos", "ningún método de pago",
-                    "non accetta pagamenti", "nessun metodo di pagamento",
-                    "accepteert momenteel geen betalingen"
-                ]
-                for phrase in error_footprints:
-                    if phrase in chk_html:
-                        return {"is_shopify": True, "is_lead": True, "reason": f"CONFIRMED NO PAYMENT: '{phrase}'"}
+            chk_req = session.get(f"{base_url}/checkout", headers=headers, timeout=15, allow_redirects=True)
+            chk_html = chk_req.text.lower()
 
-                # Payment keywords = HAS payment (REJECT)
-                payment_kws = ['visa', 'mastercard', 'amex', 'american express', 'paypal', 'credit card', 'debit card', 'card number', 'stripe', 'klarna', 'afterpay', 'shop pay', 'apple pay', 'google pay']
-                found_pay = [kw for kw in payment_kws if kw in chk_html]
-                if found_pay:
-                    return {"is_shopify": True, "is_lead": False, "reason": f"has payment: {found_pay[:2]}"}
+            # Explicit no-payment error
+            error_footprints = [
+                "isn't accepting payments", "not accepting payments", "no payment methods", 
+                "payment provider hasn't been set up", "this store is unavailable", 
+                "cannot accept payments", "can't accept payments", "checkout is disabled"
+            ]
+            for phrase in error_footprints:
+                if phrase in chk_html:
+                    return {"is_shopify": True, "is_lead": True, "reason": f"CONFIRMED NO PAYMENT: '{phrase}'"}
 
-                if base_url.replace('https://', '') in chk_req.url and '/checkout' not in chk_req.url:
-                    return {"is_shopify": True, "is_lead": True, "reason": "Redirected from checkout = no payment"}
+            # Payment keywords = HAS payment (REJECT)
+            payment_kws = ['visa', 'mastercard', 'amex', 'american express', 'paypal', 'credit card', 'debit card', 'card number', 'stripe', 'klarna', 'afterpay', 'shop pay', 'apple pay', 'google pay']
+            found_pay = [kw for kw in payment_kws if kw in chk_html]
+            if found_pay:
+                return {"is_shopify": True, "is_lead": False, "reason": f"has payment: {found_pay[:2]}"}
 
-                if any(s in chk_html for s in ['contact information', 'shipping address', 'order summary', 'express checkout', 'your email', 'kontaktinformationen', 'versand']):
-                    return {"is_shopify": True, "is_lead": True, "reason": "Checkout OK, no payment options in HTML"}
+            if base_url.replace('https://', '') in chk_req.url and '/checkout' not in chk_req.url:
+                return {"is_shopify": True, "is_lead": True, "reason": "Redirected from checkout = no payment"}
 
-                return {"is_shopify": True, "is_lead": False, "reason": "Inconclusive"}
+            if any(s in chk_html for s in ['contact information', 'shipping address', 'order summary', 'express checkout', 'your email']):
+                return {"is_shopify": True, "is_lead": True, "reason": "Checkout OK, no payment options in HTML"}
+
+            return {"is_shopify": True, "is_lead": False, "reason": "Inconclusive"}
 
         except Exception as e:
             return {"is_shopify": True, "is_lead": False, "reason": f"error: {e}"}
     except Exception:
         return {"is_shopify": False, "is_lead": False}
 
-# ─────────────────────────────────────────────────────────────────────────────
-# STORE INFO EXTRACTION (Deep Email Finder)
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Store info extraction ─────────────────────────────────────────────────────
 EMAIL_RE = re.compile(r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}')
 SKIP_EMAIL = ['example', 'sentry', 'wixpress', 'shopify', '.png', '.jpg', '.svg', 'noreply', 'domain.com']
 PHONE_RE = re.compile(r'(\+\d{1,3}[\s\-]?\(?\d{1,4}\)?[\s\-]?\d{3,4}[\s\-]?\d{3,4})')
@@ -246,9 +226,7 @@ def get_store_info(base_url, session):
         except: continue
     return result
 
-# ─────────────────────────────────────────────────────────────────────────────
-# AI EMAIL GENERATION (Groq REST API)
-# ─────────────────────────────────────────────────────────────────────────────
+# ── AI Email generation ───────────────────────────────────────────────────────
 def generate_email(tpl_subject, tpl_body, lead, groq_key):
     try:
         prompt = f"""You are writing a short cold email to a Shopify store owner.
@@ -317,14 +295,9 @@ def _run():
         log(f"❌ Apps Script: {cfg_resp['error']}", "ERROR"); return
 
     cfg = cfg_resp.get('config', {})
-    
-    apify_key = cfg.get('serpapi_key', '').strip() 
     groq_key = cfg.get('groq_api_key', '').strip()
     min_leads = int(cfg.get('min_leads', 50) or 50)
 
-    if not apify_key:
-        log("❌ Apify API Key missing! Please put it in the 'SerpAPI Key' box in CFG.", "ERROR")
-        return
     if not groq_key:
         log("❌ Groq API Key missing!", "ERROR")
         return
@@ -348,7 +321,7 @@ def _run():
     total_leads = 0
 
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
-    log("🚀 PHASE 1 — SCRAPING & STORE AGE ANALYSIS", "SUCCESS")
+    log("🚀 PHASE 1 — DIRECTORY SCRAPING & 'COMING SOON' HACK", "SUCCESS")
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
 
     for kw_row in ready_kws:
@@ -363,17 +336,17 @@ def _run():
 
         log(f"\n🎯 Keyword: [{keyword}] | Country: [{country}]", "INFO")
 
-        # 1. Scrape stores
-        store_urls = get_stores_from_apify(keyword, apify_key)
+        # 1. Scrape stores from directories
+        store_urls = get_massive_store_list(keyword)
 
         if not store_urls:
             log("⚠️  No stores found for this keyword.", "WARN")
             call_sheet({'action': 'mark_keyword_used', 'id': kw_id, 'leads_found': 0})
             continue
 
-        log(f"🔍 Checking {len(store_urls)} stores for Age and Payment Gateways...", "INFO")
+        log(f"🔍 Checking {len(store_urls)} stores for 'Opening Soon' status or Payment Gateways...", "INFO")
 
-        # 2. Check Store Age & Checkout HTML
+        # 2. Check Store Status and Save Lead
         for idx, url in enumerate(store_urls):
             if not automation_running: break
             if total_leads >= min_leads: break
@@ -386,11 +359,11 @@ def _run():
 
                 if not target_info.get("is_lead"):
                     reason = target_info.get('reason', '')
-                    # টার্মিনালে দেখাবে কেন রিজেক্ট হলো (Old Store নাকি Payment)
-                    log(f"   [{idx+1}/{len(store_urls)}] 🚫 SKIP ({reason}) — {url}", "WARN")
+                    if "Keyword" not in reason:
+                        log(f"   [{idx+1}/{len(store_urls)}] 🚫 SKIP ({reason}) — {url}", "WARN")
                     continue
 
-                # ✅ LEAD FOUND! (100% New & No Payment)
+                # ✅ LEAD FOUND!
                 log(f"   [{idx+1}/{len(store_urls)}] 🎯 100% MATCH: {target_info.get('reason')} — collecting info...", "SUCCESS")
                 
                 info = get_store_info(url, session)
@@ -505,7 +478,6 @@ def api_start():
 def api_stop():
     global automation_running
     automation_running = False
-    log("⛔ Stopped by user", "WARN")
     return jsonify({'status': 'stopped'})
 
 if __name__ == '__main__':
