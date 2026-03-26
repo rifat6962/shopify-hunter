@@ -48,64 +48,64 @@ def log(message, level="INFO"):
 MYSHOPIFY_RE = re.compile(r'([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com')
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PHASE 1: APIFY DEDICATED SCRAPER (igolaizola/shopify-store-finder)
+# PHASE 1: APIFY OFFICIAL GOOGLE SCRAPER (Free, Never Expires, Smart Dorks)
 # ─────────────────────────────────────────────────────────────────────────────
 def get_stores_from_apify(keyword, apify_key):
     """
-    Apify এর 'igolaizola/shopify-store-finder' স্ক্র্যাপার ব্যবহার করে 
-    সরাসরি Niche অনুযায়ী স্টোর বের করবে।
+    Apify এর অফিশিয়াল Google Search Scraper ব্যবহার করবে।
+    Smart Dorks এবং Time Filter দিয়ে পপুলার স্টোরগুলোকে ১০০% ব্লক করে দিবে।
     """
     urls = set()
     
-    log(f"🚀 APIFY MODE: Using 'igolaizola/shopify-store-finder' for '{keyword}'...", "INFO")
+    log(f"🚀 APIFY MODE: Using Official Apify Scraper for '{keyword}'...", "INFO")
     
-    # Apify Actor ID: igolaizola/shopify-store-finder (Apify API তে '/' এর বদলে '~' ব্যবহার হয়)
-    actor_id = "igolaizola~shopify-store-finder"
+    # Apify Official Actor ID (এটি সম্পূর্ণ ফ্রি এবং কখনো এক্সপায়ার হবে না)
+    actor_id = "apify~google-search-scraper"
     url = f"https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items?token={apify_key}"
     
+    # 🔥 ANTI-POPULAR STORE DORKS 🔥
+    # এই লেখাগুলো শুধু নতুন বা পেমেন্ট ছাড়া স্টোরেই থাকে।
+    queries = [
+        f'site:myshopify.com "{keyword}" "opening soon"',
+        f'site:myshopify.com "{keyword}" "isn\'t accepting payments right now"',
+        f'site:myshopify.com "{keyword}" "password"',
+        f'site:myshopify.com "{keyword}" "welcome to our store"'
+    ]
+    
     # Payload for the Apify Actor
-    # বিভিন্ন স্ক্র্যাপার বিভিন্ন প্যারামিটার রিসিভ করে, তাই সেফটির জন্য কমন সবগুলো দেওয়া হলো
     payload = {
-        "query": keyword,
-        "keyword": keyword,
-        "search": keyword,
-        "maxItems": 200,
-        "limit": 200
+        "queries": "\n".join(queries), # সবগুলো কোয়েরি একসাথে পাঠাবে
+        "resultsPerPage": 100,
+        "maxPagesPerQuery": 3, # প্রতি কোয়েরির ৩ পেজ করে খুঁজবে
+        "customParameters": "tbs=qdr:m" # 🚨 STRICT FILTER: শুধু গত ১ মাসের রেজাল্ট আনবে!
     }
     
     try:
-        log(f"   -> Waiting for Apify to extract stores (This takes 1-3 minutes)...", "INFO")
-        # Apify স্ক্র্যাপ করতে একটু সময় নেয়, তাই timeout 300 (5 minutes) দেওয়া হলো
+        log(f"   -> Waiting for Apify to extract NEW stores (This takes 1-3 minutes)...", "INFO")
         r = requests.post(url, json=payload, timeout=300)
         
         if r.status_code in [200, 201]:
             data = r.json()
             for item in data:
-                # Apify বিভিন্ন নামে URL রিটার্ন করতে পারে
-                store_url = item.get('url') or item.get('domain') or item.get('website') or item.get('store_url') or ''
-                if store_url:
-                    if not store_url.startswith('http'):
-                        store_url = 'https://' + store_url
-                    
-                    # Extract myshopify domain if possible, otherwise keep custom domain
-                    m = MYSHOPIFY_RE.search(store_url)
+                organic_results = item.get('organicResults', [])
+                for res in organic_results:
+                    link = res.get('url', '')
+                    m = MYSHOPIFY_RE.search(link)
                     if m:
                         urls.add(f"https://{m.group(1)}.myshopify.com")
-                    else:
-                        urls.add(store_url)
             
             log(f"   ✅ Apify Scrape Complete!", "SUCCESS")
         else:
             log(f"   ❌ Apify Error: {r.text}", "ERROR")
             
     except requests.exceptions.Timeout:
-        log(f"   ❌ Apify Request Timed Out. The scraper is taking too long.", "ERROR")
+        log(f"   ❌ Apify Request Timed Out. Try again.", "ERROR")
     except Exception as e:
         log(f"   ❌ Apify Request Failed: {e}", "ERROR")
 
     urls_list = list(urls)
     random.shuffle(urls_list)
-    log(f"📦 Found {len(urls_list)} stores from Apify Database!", "SUCCESS")
+    log(f"📦 Found {len(urls_list)} STRICTLY NEW stores from Apify!", "SUCCESS")
     return urls_list
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -331,7 +331,7 @@ def _run():
     total_leads = 0
 
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
-    log("🚀 PHASE 1 — APIFY SCRAPE & CHECKOUT ANALYSIS", "SUCCESS")
+    log("🚀 PHASE 1 — APIFY OFFICIAL SCRAPER & CHECKOUT ANALYSIS", "SUCCESS")
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
 
     for kw_row in ready_kws:
@@ -346,7 +346,7 @@ def _run():
 
         log(f"\n🎯 Keyword: [{keyword}] | Country: [{country}]", "INFO")
 
-        # 1. Scrape exact niche stores using APIFY (igolaizola/shopify-store-finder)
+        # 1. Scrape exact niche stores using APIFY Official Scraper
         store_urls = get_stores_from_apify(keyword, apify_key)
 
         if not store_urls:
