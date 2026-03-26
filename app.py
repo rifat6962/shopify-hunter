@@ -48,83 +48,126 @@ MYSHOPIFY_RE = re.compile(
 # ─────────────────────────────────────────────────────────────────────────────
 def fetch_new_stores():
     """
-    Query crt.sh for *.myshopify.com SSL certs issued in the last 7 days.
-    Returns a list of unique store URLs.
+    Collect brand-new Shopify stores (≤7 days) from multiple sources.
+    Each source is independent — if one fails, others continue.
     """
     stores = set()
     cutoff = datetime.utcnow() - timedelta(days=7)
 
-    log("🔍 Fetching new Shopify stores from crt.sh (last 7 days)...", "INFO")
+    # ── SOURCE 1: crt.sh ─────────────────────────────────────────────────────
+    log("   [1/4] crt.sh SSL cert logs...", "INFO")
     try:
         r = requests.get(
             "https://crt.sh/",
             params={"q": "%.myshopify.com", "output": "json"},
             timeout=45,
-            headers={"User-Agent": "Mozilla/5.0",
-                     "Accept": "application/json"}
+            headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
         )
-        if r.status_code != 200:
-            log(f"crt.sh returned HTTP {r.status_code}", "WARN")
-            return []
-
-        certs = r.json()
-        log(f"crt.sh: {len(certs)} total certs — filtering last 7 days...", "INFO")
-
-        for cert in certs:
-            # Date filter
-            nb = cert.get("not_before", "")
-            if nb:
-                try:
-                    dt = datetime.strptime(nb[:19], "%Y-%m-%dT%H:%M:%S")
-                    if dt < cutoff:
-                        continue          # older than 7 days → skip
-                except Exception:
-                    pass                  # unparseable → keep
-
-            # Extract subdomain
-            name = cert.get("common_name", "") or cert.get("name_value", "")
-            # name_value can contain newlines with multiple SANs
-            for part in re.split(r'[\n\r,]+', name):
-                part = part.strip().lstrip("*.")
-                m = MYSHOPIFY_RE.match(part)
-                if m:
-                    stores.add(f"https://{m.group(1)}.myshopify.com")
-
-        log(f"crt.sh: {len(stores)} unique stores (≤7 days)", "INFO")
-
-    except requests.exceptions.Timeout:
-        log("crt.sh timed out", "WARN")
+        if r.status_code == 200:
+            certs = r.json()
+            log(f"   crt.sh: {len(certs)} total certs", "INFO")
+            added = 0
+            for cert in certs:
+                nb = cert.get("not_before", "")
+                if nb:
+                    try:
+                        if datetime.strptime(nb[:19], "%Y-%m-%dT%H:%M:%S") < cutoff:
+                            continue
+                    except: pass
+                name = cert.get("common_name","") or cert.get("name_value","")
+                for part in re.split(r'[\n\r,]+', name):
+                    part = part.strip().lstrip("*.")
+                    m = MYSHOPIFY_RE.match(part)
+                    if m:
+                        stores.add(f"https://{m.group(1)}.myshopify.com")
+                        added += 1
+            log(f"   crt.sh: +{added} stores (≤7 days)", "INFO")
+        else:
+            log(f"   crt.sh HTTP {r.status_code} — skipping", "WARN")
     except Exception as e:
-        log(f"crt.sh error: {e}", "WARN")
+        log(f"   crt.sh error: {e} — skipping", "WARN")
 
-    # Supplement with URLScan (also free, no key needed)
+    # ── SOURCE 2: CertSpotter ─────────────────────────────────────────────────
+    log("   [2/4] CertSpotter...", "INFO")
     try:
-        r2 = requests.get(
-            "https://urlscan.io/api/v1/search/",
-            params={"q": "domain:myshopify.com", "size": 500, "sort": "time"},
+        r = requests.get(
+            "https://api.certspotter.com/v1/issuances",
+            params={"domain": "myshopify.com", "include_subdomains": "true",
+                    "expand": "dns_names", "match_wildcards": "false"},
             timeout=20,
             headers={"User-Agent": "Mozilla/5.0"}
         )
-        if r2.status_code == 200:
+        if r.status_code == 200:
             added = 0
-            for result in r2.json().get("results", []):
+            for cert in r.json():
+                for name in cert.get("dns_names", []):
+                    m = MYSHOPIFY_RE.search(name)
+                    if m:
+                        stores.add(f"https://{m.group(1)}.myshopify.com")
+                        added += 1
+            log(f"   CertSpotter: +{added} stores", "INFO")
+        elif r.status_code == 429:
+            log("   CertSpotter: rate limited", "WARN")
+        else:
+            log(f"   CertSpotter HTTP {r.status_code}", "WARN")
+    except Exception as e:
+        log(f"   CertSpotter error: {e}", "WARN")
+
+    # ── SOURCE 3: URLScan ─────────────────────────────────────────────────────
+    log("   [3/4] URLScan...", "INFO")
+    try:
+        r = requests.get(
+            "https://urlscan.io/api/v1/search/",
+            params={"q": "domain:myshopify.com", "size": 500, "sort": "time"},
+            timeout=20, headers={"User-Agent": "Mozilla/5.0"}
+        )
+        if r.status_code == 200:
+            added = 0
+            for result in r.json().get("results", []):
                 t = result.get("task", {}).get("time", "")
                 if t:
                     try:
                         if datetime.strptime(t[:19], "%Y-%m-%dT%H:%M:%S") < cutoff:
                             continue
-                    except Exception:
-                        pass
+                    except: pass
                 pu = result.get("page", {}).get("url", "")
                 m2 = MYSHOPIFY_RE.search(pu)
                 if m2:
                     stores.add(f"https://{m2.group(1)}.myshopify.com")
                     added += 1
-            log(f"URLScan: +{added} stores", "INFO")
+            log(f"   URLScan: +{added} stores", "INFO")
+        else:
+            log(f"   URLScan HTTP {r.status_code}", "WARN")
     except Exception as e:
-        log(f"URLScan error: {e}", "WARN")
+        log(f"   URLScan error: {e}", "WARN")
 
-    return list(stores)
+    # ── SOURCE 4: CommonCrawl (recent index, keyword-free broad sweep) ────────
+    log("   [4/4] CommonCrawl...", "INFO")
+    try:
+        r = requests.get(
+            "https://index.commoncrawl.org/CC-MAIN-2025-08-index",
+            params={"url": "*.myshopify.com/*", "output": "json",
+                    "limit": 1000, "fl": "url"},
+            timeout=25
+        )
+        if r.status_code == 200 and r.text.strip():
+            added = 0
+            for line in r.text.strip().split("\n"):
+                try:
+                    m = MYSHOPIFY_RE.search(json.loads(line).get("url",""))
+                    if m:
+                        stores.add(f"https://{m.group(1)}.myshopify.com")
+                        added += 1
+                except: continue
+            log(f"   CommonCrawl: +{added} stores", "INFO")
+        else:
+            log(f"   CommonCrawl HTTP {r.status_code}", "WARN")
+    except Exception as e:
+        log(f"   CommonCrawl error: {e}", "WARN")
+
+    total = list(stores)
+    log(f"🏪 Total fresh stores collected: {len(total)}", "SUCCESS")
+    return total
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -348,13 +391,14 @@ def _run():
 
     # ── PHASE 1: collect fresh stores ONCE (shared across all keywords) ───────
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
-    log("🚀 PHASE 1 — Fetching brand-new stores (≤7 days)", "SUCCESS")
+    log("🚀 PHASE 1 — Fetching brand-new stores (≤7 days) from 4 sources", "SUCCESS")
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
 
     fresh_stores = fetch_new_stores()
     if not fresh_stores:
-        log("❌ No fresh stores found from crt.sh / URLScan", "ERROR")
-        log("   → crt.sh may be temporarily down. Try again in a few minutes.", "WARN")
+        log("❌ All 4 sources returned 0 stores!", "ERROR")
+        log("   Sources tried: crt.sh, CertSpotter, URLScan, CommonCrawl", "WARN")
+        log("   → All may be temporarily slow. Try again in a few minutes.", "WARN")
         return
     log(f"🏪 {len(fresh_stores)} fresh stores ready to scan", "SUCCESS")
 
