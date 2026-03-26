@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SHOPIFY HUNTER</title>
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@700;900&family=Inter:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:#060810;--bg2:#0d1117;--bg3:#111827;--border:#1e2d3d;
+  --cyan:#00d4ff;--cyan-dim:rgba(0,212,255,0.12);
+  --green:#39ff14;--green-dim:rgba(57,255,20,0.1);
+  --red:#ff3860;--red-dim:rgba(255,56,96,0.12);
+  --yellow:#ffd93d;--yellow-dim:rgba(255,217,61,0.1);
+  --text:#c9d1d9;--text-dim:#58697a;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;min-height:100vh}
+body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(rgba(0,212,255,0.02) 1px,transparent 1px),linear-gradient(90deg,rgba(0,212,255,0.02) 1px,transparent 1px);background-size:40px 40px;pointer-events:none;z-index:0}
+.layout{display:flex;height:100vh;position:relative;z-index:1}
+.sidebar{width:72px;background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;align-items:center;padding:20px 0;gap:8px;flex-shrink:0}
+.logo{width:42px;height:42px;background:linear-gradient(135deg,var(--cyan),#0066ff);border-radius:10px;display:flex;align-items:center;justify-content:center;font-family:'Orbitron',monospace;font-weight:900;font-size:16px;color:#000;margin-bottom:16px;box-shadow:0 0 20px rgba(0,212,255,0.4);animation:pulse 3s ease-in-out infinite}
+@keyframes pulse{0%,100%{box-shadow:0 0 15px rgba(0,212,255,0.4)}50%{box-shadow:0 0 30px rgba(0,212,255,0.8)}}
+.nav-btn{width:48px;height:48px;border:1px solid transparent;border-radius:12px;background:transparent;color:var(--text-dim);cursor:pointer;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:3px;transition:all 0.2s;position:relative}
+.nav-btn svg{width:20px;height:20px}
+.nav-btn span{font-size:8px;font-family:'Share Tech Mono',monospace;letter-spacing:0.5px}
+.nav-btn:hover{color:var(--cyan);background:var(--cyan-dim);border-color:var(--border)}
+.nav-btn.active{color:var(--cyan);background:var(--cyan-dim);border-color:rgba(0,212,255,0.3)}
+.nav-btn.active::before{content:'';position:absolute;left:0;top:50%;transform:translateY(-50%);width:3px;height:24px;background:var(--cyan);border-radius:0 2px 2px 0;box-shadow:0 0 10px var(--cyan)}
+.sep{width:32px;height:1px;background:var(--border);margin:8px 0}
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.topbar{height:56px;background:var(--bg2);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 24px;gap:16px;flex-shrink:0}
+.topbar-title{font-family:'Orbitron',monospace;font-size:13px;font-weight:700;color:var(--cyan);letter-spacing:3px}
+.topbar-sub{font-size:11px;color:var(--text-dim);font-family:'Share Tech Mono',monospace}
+.topbar-right{margin-left:auto;display:flex;align-items:center;gap:12px}
+.sdot{width:8px;height:8px;border-radius:50%;background:var(--text-dim);display:inline-block}
+.sdot.running{background:var(--green);box-shadow:0 0 10px var(--green);animation:blink 1s infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0.3}}
+.stxt{font-size:11px;font-family:'Share Tech Mono',monospace}
+.stats-row{display:flex;gap:12px;padding:16px 20px 0;flex-shrink:0}
+.stat-card{flex:1;background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:14px 16px;position:relative;overflow:hidden}
+.stat-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--accent,var(--cyan));opacity:0.6}
+.stat-label{font-size:10px;color:var(--text-dim);font-family:'Share Tech Mono',monospace;letter-spacing:1px;text-transform:uppercase}
+.stat-value{font-family:'Orbitron',monospace;font-size:24px;font-weight:700;color:var(--accent,var(--cyan));margin-top:4px;text-shadow:0 0 15px var(--accent,var(--cyan))}
+.stat-card.green{--accent:var(--green)}
+.stat-card.yellow{--accent:var(--yellow)}
+.stat-card.red{--accent:var(--red)}
+.content{flex:1;overflow:auto;padding:16px 20px 20px}
+.screen{display:none;flex-direction:column;gap:14px}
+.screen.active{display:flex}
+.panel{background:var(--bg2);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.panel-head{padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;background:rgba(0,0,0,0.2)}
+.panel-head h3{font-family:'Orbitron',monospace;font-size:11px;font-weight:700;color:var(--cyan);letter-spacing:2px;text-transform:uppercase}
+.panel-body{padding:16px}
+.terminal{background:#030608;border:1px solid var(--border);border-radius:10px;font-family:'Share Tech Mono',monospace;font-size:12px;height:360px;overflow-y:auto;padding:12px;position:relative}
+.terminal::before{content:'● ● ●';position:absolute;top:10px;left:12px;font-size:10px;color:var(--border);letter-spacing:4px}
+.ti{margin-top:24px}
+.ll{padding:2px 0;line-height:1.6;white-space:pre-wrap;word-break:break-all}
+.ll .lt{color:var(--text-dim)}
+.ll.SUCCESS .lm{color:var(--green)}
+.ll.ERROR .lm{color:var(--red)}
+.ll.WARN .lm{color:var(--yellow)}
+.ll.INFO .lm{color:var(--text)}
+.tc{display:inline-block;width:8px;height:14px;background:var(--cyan);animation:cb 1s infinite;vertical-align:middle;margin-left:4px}
+@keyframes cb{0%,100%{opacity:1}50%{opacity:0}}
+.controls{display:flex;gap:10px;flex-wrap:wrap}
+.btn{padding:10px 20px;border-radius:8px;border:1px solid;font-family:'Share Tech Mono',monospace;font-size:12px;cursor:pointer;display:flex;align-items:center;gap:7px;transition:all 0.2s;letter-spacing:0.5px}
+.btn-primary{background:linear-gradient(135deg,rgba(0,212,255,0.15),rgba(0,212,255,0.05));border-color:var(--cyan);color:var(--cyan)}
+.btn-primary:hover{background:rgba(0,212,255,0.25);box-shadow:0 0 15px rgba(0,212,255,0.3)}
+.btn-danger{background:rgba(255,56,96,0.1);border-color:var(--red);color:var(--red)}
+.btn-success{background:rgba(57,255,20,0.1);border-color:var(--green);color:var(--green)}
+.btn-ghost{background:transparent;border-color:var(--border);color:var(--text-dim)}
+.btn-ghost:hover{border-color:var(--cyan);color:var(--cyan)}
+.btn:disabled{opacity:0.4;cursor:not-allowed}
+.btn-sm{padding:6px 12px;font-size:11px}
+.form-row{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap}
+.field{display:flex;flex-direction:column;gap:6px;flex:1;min-width:140px}
+.field label{font-size:10px;letter-spacing:1px;color:var(--text-dim);font-family:'Share Tech Mono',monospace;text-transform:uppercase}
+input,select,textarea{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text);font-family:'Share Tech Mono',monospace;font-size:12px;transition:all 0.2s;width:100%}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--cyan);box-shadow:0 0 10px rgba(0,212,255,0.2)}
+input::placeholder,textarea::placeholder{color:var(--text-dim)}
+textarea{resize:vertical;min-height:100px}
+.kw-list,.tpl-list{display:flex;flex-direction:column;gap:6px;margin-top:12px;max-height:320px;overflow-y:auto}
+.kw-item,.tpl-item{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--bg);border:1px solid var(--border);border-radius:8px;transition:all 0.15s}
+.kw-item:hover,.tpl-item:hover{border-color:rgba(0,212,255,0.3)}
+.badge{padding:3px 8px;border-radius:4px;font-size:10px;font-family:'Share Tech Mono',monospace}
+.badge.used{background:rgba(255,56,96,0.15);color:var(--red)}
+.badge.ready{background:var(--green-dim);color:var(--green)}
+.kw-name{flex:1;font-family:'Share Tech Mono',monospace;font-size:13px}
+.kw-country{font-size:11px;color:var(--cyan);background:var(--cyan-dim);padding:2px 8px;border-radius:4px}
+.del-btn{width:28px;height:28px;background:transparent;border:1px solid rgba(255,56,96,0.3);border-radius:6px;color:var(--red);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:14px;transition:all 0.2s;flex-shrink:0}
+.del-btn:hover{background:rgba(255,56,96,0.15)}
+.leads-wrap{overflow:auto;max-height:440px}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;padding:10px 12px;font-family:'Share Tech Mono',monospace;font-size:10px;letter-spacing:1px;color:var(--text-dim);background:var(--bg);border-bottom:1px solid var(--border);position:sticky;top:0}
+td{padding:9px 12px;border-bottom:1px solid rgba(30,45,61,0.5);vertical-align:middle}
+tr:hover td{background:rgba(0,212,255,0.03)}
+.tag{padding:2px 7px;border-radius:4px;font-size:10px;font-family:'Share Tech Mono',monospace}
+.tag.sent{background:var(--green-dim);color:var(--green)}
+.tag.pending{background:var(--red-dim);color:var(--red)}
+.alert{padding:10px 14px;border-radius:8px;font-size:12px;font-family:'Share Tech Mono',monospace;display:none;margin-top:8px}
+.alert.info{background:var(--cyan-dim);border:1px solid rgba(0,212,255,0.3);color:var(--cyan)}
+.alert.success{background:var(--green-dim);border:1px solid rgba(57,255,20,0.3);color:var(--green)}
+.alert.error{background:var(--red-dim);border:1px solid rgba(255,56,96,0.3);color:var(--red)}
+.alert.show{display:block}
+.empty{text-align:center;padding:40px;color:var(--text-dim);font-family:'Share Tech Mono',monospace;font-size:12px}
+.empty .icon{font-size:32px;margin-bottom:10px}
+.cfg-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px}
+.info-box{background:var(--bg);border-left:3px solid var(--cyan);padding:12px 16px;border-radius:0 8px 8px 0;font-size:12px;line-height:1.8;color:var(--text);margin-bottom:14px}
+.info-box .step{color:var(--cyan);font-family:'Share Tech Mono',monospace}
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+.live-badge{display:flex;align-items:center;gap:6px;font-family:'Share Tech Mono',monospace;font-size:10px;color:var(--green);padding:4px 10px;background:var(--green-dim);border-radius:4px}
+</style>
+</head>
+<body>
+<div class="layout">
+<aside class="sidebar">
+  <div class="logo">SH</div>
+  <button class="nav-btn active" data-screen="live" title="Live">
+    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z"/></svg>
+    <span>LIVE</span>
+  </button>
+  <button class="nav-btn" data-screen="leads" title="Keywords">
+    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"/></svg>
+    <span>LEADS</span>
+  </button>
+  <button class="nav-btn" data-screen="data" title="Data">
+    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375"/></svg>
+    <span>DATA</span>
+  </button>
+  <button class="nav-btn" data-screen="templates" title="Email">
+    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75"/></svg>
+    <span>EMAIL</span>
+  </button>
+  <div class="sep"></div>
+  <button class="nav-btn" data-screen="settings" title="Settings">
+    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+    <span>CFG</span>
+  </button>
+</aside>
+
+<div class="main">
+  <div class="topbar">
+    <div>
+      <div class="topbar-title">SHOPIFY HUNTER</div>
+      <div class="topbar-sub">AI Lead Agent — No-Payment Store Finder</div>
+    </div>
+    <div class="topbar-right">
+      <span class="sdot" id="sdot"></span>
+      <span class="stxt" id="stxt">IDLE</span>
+    </div>
+  </div>
+
+  <div class="stats-row">
+    <div class="stat-card"><div class="stat-label">TOTAL LEADS</div><div class="stat-value" id="s-leads">0</div></div>
+    <div class="stat-card green"><div class="stat-label">EMAILS SENT</div><div class="stat-value" id="s-emails">0</div></div>
+    <div class="stat-card yellow"><div class="stat-label">KEYWORDS</div><div class="stat-value" id="s-kws">0</div></div>
+    <div class="stat-card red"><div class="stat-label">KW USED</div><div class="stat-value" id="s-used">0</div></div>
+  </div>
+
+  <div class="content">
+
+    <!-- LIVE -->
+    <div class="screen active" id="screen-live">
+      <div class="panel" style="flex:1">
+        <div class="panel-head">
+          <h3>⚡ Live Monitor</h3>
+          <div class="live-badge" id="live-badge" style="display:none"><span class="sdot running"></span>LIVE</div>
+          <div style="margin-left:auto;display:flex;gap:8px">
+            <button class="btn btn-primary btn-sm" id="btn-start" onclick="startAuto()">▶ START</button>
+            <button class="btn btn-danger btn-sm" id="btn-stop" onclick="stopAuto()" disabled>■ STOP</button>
+            <button class="btn btn-ghost btn-sm" onclick="document.getElementById('ti').innerHTML=''">CLR</button>
+          </div>
+        </div>
+        <div class="panel-body">
+          <div class="terminal" id="terminal">
+            <div class="ti" id="ti">
+              <div class="ll INFO"><span class="lt">[SYS] </span><span class="lm">SHOPIFY HUNTER — Ready. Configure settings then START.</span></div>
+            </div>
+            <span class="tc"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- KEYWORDS -->
+    <div class="screen" id="screen-leads">
+      <div class="panel">
+        <div class="panel-head">
+          <h3>🎯 Target Keywords</h3>
+          <div style="margin-left:auto;display:flex;gap:8px">
+            <button class="btn btn-ghost btn-sm" onclick="resetKws()">↺ Reset Used</button>
+          </div>
+        </div>
+        <div class="panel-body">
+          <div class="form-row">
+            <div class="field"><label>Keyword</label><input id="kw-input" placeholder="e.g. clothing, shoes, jewelry..."/></div>
+            <div class="field" style="max-width:200px"><label>Country</label><input id="kw-country" placeholder="e.g. USA, UK, Canada..."/></div>
+            <button class="btn btn-primary" onclick="addKw()" style="align-self:flex-end">+ ADD</button>
+          </div>
+          <div id="kw-alert" class="alert"></div>
+          <div class="kw-list" id="kw-list"><div class="empty"><div class="icon">🔍</div>No keywords yet.</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- DATA -->
+    <div class="screen" id="screen-data">
+      <div class="panel" style="flex:1">
+        <div class="panel-head">
+          <h3>📊 Collected Leads</h3>
+          <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+            <span id="leads-count" style="font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--text-dim)">0 records</span>
+            <button class="btn btn-success btn-sm" onclick="exportCSV()">⬇ CSV</button>
+            <button class="btn btn-ghost btn-sm" onclick="loadLeads()">↺</button>
+          </div>
+        </div>
+        <div class="panel-body" style="padding:0">
+          <div class="leads-wrap">
+            <table>
+              <thead><tr><th>#</th><th>STORE</th><th>URL</th><th>EMAIL</th><th>PHONE</th><th>COUNTRY</th><th>EMAIL</th></tr></thead>
+              <tbody id="leads-tbody"><tr><td colspan="7"><div class="empty"><div class="icon">📭</div>No leads yet.</div></td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TEMPLATES -->
+    <div class="screen" id="screen-templates">
+      <div class="panel">
+        <div class="panel-head"><h3>✉️ Email Templates</h3></div>
+        <div class="panel-body">
+          <div class="field" style="margin-bottom:10px"><label>Template Name</label><input id="tpl-name" placeholder="e.g. Payment Gateway Pitch"/></div>
+          <div class="field" style="margin-bottom:10px"><label>Subject</label><input id="tpl-subject" placeholder="e.g. Your store is missing one thing..."/></div>
+          <div class="field" style="margin-bottom:10px"><label>Body (AI personalizes this per store)</label>
+            <textarea id="tpl-body" style="min-height:130px" placeholder="Hi,&#10;&#10;I noticed your Shopify store doesn't have a payment gateway set up yet — which means you're unable to accept orders right now.&#10;&#10;I help store owners like you get set up quickly. Would love to help if you're interested.&#10;&#10;Best,&#10;[Your Name]"></textarea>
+          </div>
+          <div id="tpl-alert" class="alert"></div>
+          <button class="btn btn-primary" onclick="addTpl()">+ ADD TEMPLATE</button>
+          <div class="tpl-list" id="tpl-list" style="margin-top:12px"><div class="empty"><div class="icon">📝</div>No templates yet.</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SETTINGS -->
+    <div class="screen" id="screen-settings">
+      <div class="panel">
+        <div class="panel-head"><h3>⚙️ API Configuration</h3></div>
+        <div class="panel-body">
+          <div class="info-box" style="margin-bottom:14px">
+            <span class="step">ℹ️ </span>All settings are saved in your <b>Google Sheet → Config tab</b>.<br>
+            Changes here update the sheet directly.
+          </div>
+          <div class="cfg-grid">
+            <div class="field"><label>Groq API Key <a href="https://console.groq.com" target="_blank" style="color:var(--cyan);font-size:10px">→ console.groq.com (free)</a></label><input type="password" id="cfg-groq" placeholder="gsk_..."/></div>
+            <div class="field"><label>SerpAPI Key <a href="https://serpapi.com" target="_blank" style="color:var(--cyan);font-size:10px">→ serpapi.com (100 free/month)</a></label><input type="password" id="cfg-serpapi" placeholder="Paste SerpAPI key..."/></div>
+            <div class="field"><label>Min Leads Target</label><input type="number" id="cfg-min" value="50" min="10" max="2000"/></div>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="saveConfig()">💾 SAVE TO SHEET</button>
+          <div id="cfg-alert" class="alert"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h3>📋 Google Sheet Setup Guide</h3></div>
+        <div class="panel-body">
+          <div class="info-box">
+            <span class="step">① </span>Go to <a href="https://sheets.google.com" target="_blank" style="color:var(--cyan)">sheets.google.com</a> → Create new spreadsheet<br>
+            <span class="step">② </span>Name it: <b>Shopify Hunter DB</b><br>
+            <span class="step">③ </span>Create 4 tabs: <b>Config, Keywords, Leads, Templates</b><br>
+            <span class="step">④ </span>Go to <b>Extensions → Apps Script</b><br>
+            <span class="step">⑤ </span>Paste the Apps Script code (download from GitHub)<br>
+            <span class="step">⑥ </span>Run <b>setupSheets()</b> function once<br>
+            <span class="step">⑦ </span>Deploy → Web App → Execute as Me → Anyone<br>
+            <span class="step">⑧ </span>Copy URL → Add to Render as <b>APPS_SCRIPT_URL</b> environment variable<br>
+            <span class="step">⑨ </span>Get Google API Key from <a href="https://console.cloud.google.com" target="_blank" style="color:var(--cyan)">console.cloud.google.com</a> → Enable Custom Search API<br>
+            <span class="step">⑩ </span>Create Search Engine at <a href="https://cse.google.com/cse/all" target="_blank" style="color:var(--cyan)">cse.google.com</a> → Sites: <b>*.myshopify.com</b> → Get CX ID<br>
+            <span class="step">⑨ </span>Redeploy Render → Done!
+          </div>
+          <div id="conn-status" style="font-family:'Share Tech Mono',monospace;font-size:12px;padding:10px;border-radius:8px;background:var(--bg);border:1px solid var(--border)">
+            Checking connection...
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+</div>
+
+<script>
+// ── NAV ────────────────────────────────────────────────────────
+document.querySelectorAll('.nav-btn[data-screen]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const s = btn.dataset.screen;
+    document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    document.querySelectorAll('.screen').forEach(el => el.classList.remove('active'));
+    document.getElementById('screen-'+s).classList.add('active');
+    if (s==='data') loadLeads();
+    if (s==='leads') loadKws();
+    if (s==='templates') loadTpls();
+    if (s==='settings') loadSettings();
+  });
+});
+
+// ── Sheet API proxy ────────────────────────────────────────────
+async function sheet(payload) {
+  const r = await fetch('/api/sheet', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(payload)
+  });
+  return r.json();
+}
+
+// ── STATUS POLLING ─────────────────────────────────────────────
+async function pollStatus() {
+  try {
+    const d = await (await fetch('/api/status')).json();
+    document.getElementById('s-leads').textContent = d.total_leads || 0;
+    document.getElementById('s-emails').textContent = d.emails_sent || 0;
+    document.getElementById('s-kws').textContent = d.kw_total || 0;
+    document.getElementById('s-used').textContent = d.kw_used || 0;
+    const running = d.running;
+    document.getElementById('sdot').className = 'sdot' + (running?' running':'');
+    document.getElementById('stxt').textContent = running ? 'RUNNING' : 'IDLE';
+    document.getElementById('live-badge').style.display = running ? 'flex' : 'none';
+    document.getElementById('btn-start').disabled = running;
+    document.getElementById('btn-stop').disabled = !running;
+    const cs = document.getElementById('conn-status');
+    if (cs) {
+      cs.style.color = d.script_connected ? 'var(--green)' : 'var(--red)';
+      cs.textContent = d.script_connected ? '✅ Apps Script connected!' : '❌ APPS_SCRIPT_URL not set in Render environment variables';
+    }
+  } catch(e){}
+}
+setInterval(pollStatus, 4000);
+pollStatus();
+
+// ── SSE LOGS ───────────────────────────────────────────────────
+let sse = null;
+function connectSSE() {
+  if (sse) sse.close();
+  sse = new EventSource('/api/logs/stream');
+  sse.onmessage = e => {
+    const d = JSON.parse(e.data);
+    if (d.ping) return;
+    const ti = document.getElementById('ti');
+    const line = document.createElement('div');
+    line.className = 'll ' + (d.level||'INFO');
+    line.innerHTML = `<span class="lt">[${d.time}] </span><span class="lm">${esc(d.message)}</span>`;
+    ti.appendChild(line);
+    while (ti.children.length > 200) ti.removeChild(ti.firstChild);
+    const t = document.getElementById('terminal');
+    t.scrollTop = t.scrollHeight;
+  };
+  sse.onerror = () => setTimeout(connectSSE, 3000);
+}
+connectSSE();
+function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+// ── AUTOMATION ─────────────────────────────────────────────────
+async function startAuto() {
+  await fetch('/api/automation/start', {method:'POST'});
+  pollStatus();
+}
+async function stopAuto() {
+  await fetch('/api/automation/stop', {method:'POST'});
+  pollStatus();
+}
+
+// ── KEYWORDS ──────────────────────────────────────────────────
+async function loadKws() {
+  const d = await sheet({action:'get_keywords'});
+  const kws = d.keywords || [];
+  const list = document.getElementById('kw-list');
+  if (!kws.length) { list.innerHTML = '<div class="empty"><div class="icon">🔍</div>No keywords yet.</div>'; return; }
+  list.innerHTML = kws.map(k => `
+    <div class="kw-item">
+      <span class="badge ${k.status==='used'?'used':'ready'}">${k.status==='used'?'USED':'READY'}</span>
+      <span class="kw-name">${esc(k.keyword)}</span>
+      <span class="kw-country">${esc(k.country)}</span>
+      ${k.leads_found ? `<span style="font-size:11px;color:var(--text-dim)">${k.leads_found} leads</span>` : ''}
+      <button class="del-btn" onclick="delKw('${k.id}')">✕</button>
+    </div>`).join('');
+}
+
+async function addKw() {
+  const kw = document.getElementById('kw-input').value.trim();
+  const co = document.getElementById('kw-country').value.trim();
+  const al = document.getElementById('kw-alert');
+  if (!kw||!co) { showAlert(al,'error','Fill both fields!'); return; }
+  await sheet({action:'add_keyword', keyword:kw, country:co});
+  document.getElementById('kw-input').value='';
+  document.getElementById('kw-country').value='';
+  showAlert(al,'success',`✅ "${kw}" added!`);
+  loadKws();
+}
+
+async function delKw(id) {
+  if (!confirm('Delete?')) return;
+  await sheet({action:'delete_keyword', id});
+  loadKws();
+}
+
+async function resetKws() {
+  if (!confirm('Reset all keywords to READY?')) return;
+  await sheet({action:'reset_keywords'});
+  loadKws();
+}
+
+// ── TEMPLATES ─────────────────────────────────────────────────
+async function loadTpls() {
+  const d = await sheet({action:'get_templates'});
+  const tpls = d.templates || [];
+  const list = document.getElementById('tpl-list');
+  if (!tpls.length) { list.innerHTML = '<div class="empty"><div class="icon">📝</div>No templates yet.</div>'; return; }
+  list.innerHTML = tpls.map(t => `
+    <div class="tpl-item">
+      <div style="flex:1">
+        <div style="font-family:'Orbitron',monospace;font-size:12px;color:var(--cyan);margin-bottom:4px">${esc(t.name)}</div>
+        <div style="font-size:11px;color:var(--text-dim)">Subject: ${esc(t.subject)}</div>
+        <div style="font-size:11px;color:var(--text-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:400px">${esc(t.body)}</div>
+      </div>
+      <button class="del-btn" onclick="delTpl('${t.id}')">✕</button>
+    </div>`).join('');
+}
+
+async function addTpl() {
+  const name = document.getElementById('tpl-name').value.trim();
+  const subject = document.getElementById('tpl-subject').value.trim();
+  const body = document.getElementById('tpl-body').value.trim();
+  const al = document.getElementById('tpl-alert');
+  if (!name||!subject||!body) { showAlert(al,'error','Fill all fields!'); return; }
+  await sheet({action:'add_template', name, subject, body});
+  document.getElementById('tpl-name').value='';
+  document.getElementById('tpl-subject').value='';
+  document.getElementById('tpl-body').value='';
+  showAlert(al,'success',`✅ Template added!`);
+  loadTpls();
+}
+
+async function delTpl(id) {
+  if (!confirm('Delete?')) return;
+  await sheet({action:'delete_template', id});
+  loadTpls();
+}
+
+// ── LEADS DATA ─────────────────────────────────────────────────
+async function loadLeads() {
+  const d = await sheet({action:'get_leads'});
+  const leads = d.leads || [];
+  document.getElementById('leads-count').textContent = leads.length + ' records';
+  const tbody = document.getElementById('leads-tbody');
+  if (!leads.length) { tbody.innerHTML = '<tr><td colspan="7"><div class="empty"><div class="icon">📭</div>No leads yet.</div></td></tr>'; return; }
+  tbody.innerHTML = leads.slice().reverse().map(l => `
+    <tr>
+      <td style="color:var(--text-dim);font-size:11px">${l.id||''}</td>
+      <td style="max-width:140px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(l.store_name||'—')}</td>
+      <td><a href="${esc(l.url||'')}" target="_blank" style="color:var(--cyan);font-size:11px;font-family:'Share Tech Mono',monospace">${esc((l.url||'').replace('https://',''))}</a></td>
+      <td style="font-family:'Share Tech Mono',monospace;font-size:11px">${esc(l.email||'—')}</td>
+      <td style="font-size:11px">${esc(l.phone||'—')}</td>
+      <td>${esc(l.country||'—')}</td>
+      <td><span class="tag ${l.email_sent==='sent'?'sent':'pending'}">${l.email_sent==='sent'?'✓ SENT':'PENDING'}</span></td>
+    </tr>`).join('');
+}
+
+function exportCSV() {
+  sheet({action:'get_leads'}).then(d => {
+    const leads = d.leads || [];
+    if (!leads.length) { alert('No leads to export!'); return; }
+    const headers = ['ID','Store Name','URL','Email','Phone','Country','Keyword','Email Sent','Created At'];
+    const rows = leads.map(l => [l.id,l.store_name,l.url,l.email,l.phone,l.country,l.keyword,l.email_sent,l.created_at].map(v=>`"${String(v||'').replace(/"/g,'""')}"`).join(','));
+    const csv = [headers.join(','), ...rows].join('\n');
+    const a = document.createElement('a');
+    a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+    a.download = 'shopify_leads.csv';
+    a.click();
+  });
+}
+
+// ── SETTINGS ──────────────────────────────────────────────────
+async function loadSettings() {
+  const d = await sheet({action:'get_config'});
+  const cfg = d.config || {};
+  if (cfg.groq_api_key) document.getElementById('cfg-groq').value = cfg.groq_api_key;
+  if (cfg.serpapi_key) document.getElementById('cfg-serpapi').value = cfg.serpapi_key;
+  if (cfg.min_leads) document.getElementById('cfg-min').value = cfg.min_leads;
+}
+
+async function saveConfig() {
+  const groq = document.getElementById('cfg-groq').value.trim();
+  const serpapi = document.getElementById('cfg-serpapi').value.trim();
+  const min = document.getElementById('cfg-min').value;
+  const al = document.getElementById('cfg-alert');
+  if (!groq || !serpapi) { showAlert(al,'error','Both Groq and SerpAPI keys required!'); return; }
+  const r = await sheet({action:'save_config', config:{groq_api_key:groq, serpapi_key:serpapi, min_leads:min}});
+  if (r.status==='ok') showAlert(al,'success','✅ Saved to Google Sheet!');
+  else showAlert(al,'error','Error: ' + JSON.stringify(r));
+}
+
+// ── UTILS ──────────────────────────────────────────────────────
+function showAlert(el, type, msg) {
+  el.className = 'alert ' + type + ' show';
+  el.textContent = msg;
+  setTimeout(() => el.classList.remove('show'), 4000);
+}
+</script>
+</body>
+</html>
