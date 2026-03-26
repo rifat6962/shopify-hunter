@@ -48,51 +48,72 @@ def log(message, level="INFO"):
 MYSHOPIFY_RE = re.compile(r'([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com')
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PHASE 1: MASSIVE DIRECTORY SCRAPING (No Google, No Apify)
+# PHASE 1: SERPAPI "COMING SOON" HACK SCRAPER
 # ─────────────────────────────────────────────────────────────────────────────
-def get_massive_store_list(keyword):
+def get_massive_store_list(keyword, country, serpapi_key):
     """
-    গুগল বা Apify বাদ দিয়ে সরাসরি গ্লোবাল ডিরেক্টরি থেকে হাজার হাজার স্টোর আনবে।
+    SerpAPI ব্যবহার করে গুগল থেকে সরাসরি "Opening Soon" এবং "No Payment" স্টোরগুলো বের করবে।
     """
     urls = set()
     kw_clean = keyword.lower().replace(' ', '').replace('-', '')
     
-    log(f"🚀 DIRECTORY MODE: Scraping Global Databases for '{keyword}'...", "INFO")
+    log(f"🚀 SERPAPI MODE: Scraping Google for NEW '{keyword}' stores...", "INFO")
 
-    # ── SOURCE 1: URLScan.io (Massive Search) ──
-    log(f"   -> Checking URLScan (Recently scanned stores)...", "INFO")
+    if not serpapi_key:
+        log("❌ SerpAPI Key is missing! Cannot scrape Google.", "ERROR")
+        return []
+
+    # 🔥 THE DORKS: এই কিওয়ার্ডগুলো শুধু নতুন স্টোরেই থাকে!
+    queries = [
+        f'site:myshopify.com "{keyword}" "opening soon"',
+        f'site:myshopify.com "{keyword}" "password"',
+        f'site:myshopify.com "{keyword}" "isn\'t accepting payments right now"',
+        f'site:myshopify.com "{keyword}" "welcome to our store"',
+        f'site:myshopify.com "{keyword}" {country}'
+    ]
+
+    log(f"   -> Querying Google via SerpAPI (Past Month Filter)...", "INFO")
+    
+    for q in queries:
+        if len(urls) > 1000: break
+        # গুগলের প্রথম ৩টি পেজ (0, 100, 200) স্ক্যান করবে
+        for start in [0, 100, 200]:
+            try:
+                params = {
+                    'api_key': serpapi_key, 
+                    'engine': 'google', 
+                    'q': q, 
+                    'num': 100, 
+                    'start': start,
+                    'tbs': 'qdr:m' # 🚨 STRICT FILTER: শুধু গত ১ মাসের রেজাল্ট আনবে!
+                }
+                res = requests.get('https://serpapi.com/search', params=params, timeout=15)
+                if res.status_code == 200:
+                    data = res.json()
+                    if "error" in data:
+                        log(f"   ⚠️ SerpAPI Error: {data['error']}", "WARN")
+                        break
+                    
+                    results = data.get('organic_results', [])
+                    if not results: break # পেজ খালি থাকলে পরের পেজে যাবে না
+                    
+                    for item in results:
+                        m = MYSHOPIFY_RE.search(item.get('link', ''))
+                        if m: urls.add(f"https://{m.group(1)}.myshopify.com")
+            except Exception as e:
+                pass
+            time.sleep(1)
+
+    # ── BACKUP: URLScan.io ──
+    log(f"   -> Checking URLScan backup...", "INFO")
     try:
-        urlscan_url = f"https://urlscan.io/api/v1/search/?q=domain:myshopify.com AND {kw_clean}&size=1000&sort=time"
-        r = requests.get(urlscan_url, timeout=15)
+        urlscan_url = f"https://urlscan.io/api/v1/search/?q=domain:myshopify.com AND {kw_clean}&size=500&sort=time"
+        r = requests.get(urlscan_url, timeout=10)
         if r.status_code == 200:
             for res in r.json().get('results', []):
                 page_url = res.get('page', {}).get('url', '')
                 m = MYSHOPIFY_RE.search(page_url)
                 if m: urls.add(f"https://{m.group(1)}.myshopify.com")
-    except Exception:
-        pass
-
-    # ── SOURCE 2: AlienVault OTX (Passive DNS) ──
-    log(f"   -> Checking AlienVault OTX (Global DNS Records)...", "INFO")
-    try:
-        r = requests.get("https://otx.alienvault.com/api/v1/indicators/domain/myshopify.com/passive_dns", timeout=15)
-        if r.status_code == 200:
-            for entry in r.json().get('passive_dns', []):
-                h = entry.get('hostname', '').lower()
-                if h.endswith('.myshopify.com') and kw_clean in h:
-                    urls.add(f"https://{h}")
-    except Exception:
-        pass
-
-    # ── SOURCE 3: CertSpotter (SSL Logs) ──
-    log(f"   -> Checking CertSpotter (SSL Certificates)...", "INFO")
-    try:
-        r = requests.get('https://api.certspotter.com/v1/issuances?domain=myshopify.com&include_subdomains=true&expand=dns_names&match_wildcards=false', timeout=15)
-        if r.status_code == 200:
-            for cert in r.json():
-                for name in cert.get('dns_names', []):
-                    if name.endswith('.myshopify.com') and kw_clean in name.lower():
-                        urls.add(f"https://{name}")
     except Exception:
         pass
 
@@ -102,15 +123,9 @@ def get_massive_store_list(keyword):
     return urls_list
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PHASE 2: THE "COMING SOON" HACK (100% Guaranteed New & No Payment)
+# PHASE 2: THE "COMING SOON" HACK & CHECKOUT TEST
 # ─────────────────────────────────────────────────────────────────────────────
 def check_store_target(base_url, session, keyword):
-    """
-    ১. হোমপেজে আপনার কিওয়ার্ড (যেমন: shoes) আছে কিনা চেক করবে।
-    ২. হোমপেজে "Opening Soon" বা "Password" লেখা আছে কিনা চেক করবে।
-    ৩. যদি থাকে, তারমানে স্টোরটি ১০০% নতুন এবং পেমেন্ট নেই! (LEAD ACCEPTED)
-    ৪. যদি স্টোরটি লাইভ থাকে, তবে চেকআউটে গিয়ে পেমেন্ট চেক করবে।
-    """
     ua = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
           'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36')
     headers = {
@@ -295,11 +310,12 @@ def _run():
         log(f"❌ Apps Script: {cfg_resp['error']}", "ERROR"); return
 
     cfg = cfg_resp.get('config', {})
+    serpapi_key = cfg.get('serpapi_key', '').strip()
     groq_key = cfg.get('groq_api_key', '').strip()
     min_leads = int(cfg.get('min_leads', 50) or 50)
 
-    if not groq_key:
-        log("❌ Groq API Key missing!", "ERROR")
+    if not serpapi_key:
+        log("❌ SerpAPI Key missing! Please put it in the CFG screen.", "ERROR")
         return
 
     log(f"✅ Config loaded | Target: {min_leads} leads", "INFO")
@@ -321,7 +337,7 @@ def _run():
     total_leads = 0
 
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
-    log("🚀 PHASE 1 — DIRECTORY SCRAPING & 'COMING SOON' HACK", "SUCCESS")
+    log("🚀 PHASE 1 — SERPAPI 'COMING SOON' HACK SCRAPER", "SUCCESS")
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
 
     for kw_row in ready_kws:
@@ -336,8 +352,8 @@ def _run():
 
         log(f"\n🎯 Keyword: [{keyword}] | Country: [{country}]", "INFO")
 
-        # 1. Scrape stores from directories
-        store_urls = get_massive_store_list(keyword)
+        # 1. Scrape stores using SerpAPI
+        store_urls = get_massive_store_list(keyword, country, serpapi_key)
 
         if not store_urls:
             log("⚠️  No stores found for this keyword.", "WARN")
