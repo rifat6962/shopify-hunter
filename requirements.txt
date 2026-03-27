@@ -2,4 +2,5 @@ Flask==3.0.0
 requests==2.31.0
 beautifulsoup4==4.12.2
 APScheduler==3.10.4
-duckduckgo-search==6.2.4
+googlesearch-python==1.2.3
+fake-useragent==1.4.0
