@@ -6,19 +6,13 @@ import json
 import re
 import random
 import requests
+import concurrent.futures
 from bs4 import BeautifulSoup
 from apscheduler.schedulers.background import BackgroundScheduler
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 import os
-
-# 🔥 THE PYTHON SCRAPER LIBRARIES 🔥
-try:
-    from googlesearch import search
-    from fake_useragent import UserAgent
-    PYTHON_SCRAPER_AVAILABLE = True
-except ImportError:
-    PYTHON_SCRAPER_AVAILABLE = False
+import urllib.parse
 
 logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
@@ -56,154 +50,171 @@ def log(message, level="INFO"):
 MYSHOPIFY_RE = re.compile(r'([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com')
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PHASE 1: THE PYTHON LIBRARY SCRAPER (Anti-Ban + 1 Week Filter)
+# THE REAL "SHOPIFY SCRAPER WORKER" (Bypasses Google 429 Errors)
 # ─────────────────────────────────────────────────────────────────────────────
-class PythonLibraryScraper:
-    def __init__(self):
-        if PYTHON_SCRAPER_AVAILABLE:
-            self.ua = UserAgent()
-        else:
-            self.ua = None
+class ShopifyScraperWorker:
+    def __init__(self, keyword, country):
+        self.keyword = keyword.lower().strip()
+        self.kw_clean = self.keyword.replace(' ', '').replace('-', '')
+        self.country = country
+        self.session = requests.Session()
+        self.headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+        }
 
-    def get_new_stores(self, keyword):
+    def fetch_raw_urls(self):
         """
-        Python এর 'googlesearch-python' লাইব্রেরি ব্যবহার করে 
-        শুধুমাত্র গত ৭ দিনে তৈরি হওয়া স্টোরগুলো বের করবে।
+        গুগল (429 Error) পুরোপুরি বাদ দিয়ে ৪টি ভিন্ন সোর্স থেকে স্টোর কালেক্ট করবে।
         """
         urls = set()
-        kw_clean = keyword.lower().replace(' ', '')
-        
-        log(f"🚀 PYTHON LIBRARY MODE: Fetching ONLY 1-Week old stores for '{keyword}'...", "INFO")
+        log(f"🚀 WORKER MODE: Fetching stores for '{self.keyword}' (Bypassing Google)...", "INFO")
 
-        if not PYTHON_SCRAPER_AVAILABLE:
-            log("❌ Python scraper libraries not installed! Check requirements.txt", "ERROR")
-            return []
-
-        # ── SOURCE 1: Python Google Search Library (Past Week Filter) ──
-        log(f"   -> Scraping via Python Search Library (Past 7 Days)...", "INFO")
-        
-        # Smart Dorks to find new or broken stores
         queries = [
-            f'site:myshopify.com "{keyword}" "opening soon"',
-            f'site:myshopify.com "{keyword}" "isn\'t accepting payments right now"',
-            f'site:myshopify.com "{keyword}"'
+            f'site:myshopify.com "{self.keyword}" "opening soon"',
+            f'site:myshopify.com "{self.keyword}" "isn\'t accepting payments right now"',
+            f'site:myshopify.com "{self.keyword}"'
         ]
-        
-        for q in queries:
-            if len(urls) > 300: break
-            try:
-                # sleep_interval=3 prevents IP blocking (Anti-Ban)
-                # tbs='qdr:w' means strictly Past Week (গত ৭ দিন)
-                for result in search(q, num_results=100, sleep_interval=3, advanced=False):
-                    m = MYSHOPIFY_RE.search(result)
-                    if m:
-                        urls.add(f"https://{m.group(1)}.myshopify.com")
-            except Exception as e:
-                log(f"   Python Scraper error: {e}", "WARN")
-                time.sleep(5) # Wait before next query if blocked
 
-        # ── SOURCE 2: URLScan.io (Strictly Past 7 Days Backup) ──
-        log(f"   -> Scraping via URLScan API (Past 7 Days)...", "INFO")
+        # 1. DuckDuckGo HTML (No API, No 429 Error)
+        log(f"   -> Scraping DuckDuckGo...", "INFO")
+        for q in queries:
+            try:
+                r = requests.post("https://html.duckduckgo.com/html/", data={'q': q}, headers=self.headers, timeout=10)
+                soup = BeautifulSoup(r.text, 'html.parser')
+                for a in soup.find_all('a', class_='result__url'):
+                    m = MYSHOPIFY_RE.search(a.text)
+                    if m: urls.add(f"https://{m.group(1)}.myshopify.com")
+            except Exception: pass
+            time.sleep(1)
+
+        # 2. Bing Search
+        log(f"   -> Scraping Bing...", "INFO")
+        for q in queries:
+            try:
+                encoded_q = urllib.parse.quote_plus(q)
+                r = requests.get(f"https://www.bing.com/search?q={encoded_q}", headers=self.headers, timeout=10)
+                soup = BeautifulSoup(r.text, 'html.parser')
+                for a in soup.find_all('a', href=True):
+                    m = MYSHOPIFY_RE.search(a['href'])
+                    if m: urls.add(f"https://{m.group(1)}.myshopify.com")
+            except Exception: pass
+            time.sleep(1)
+
+        # 3. CertSpotter (New SSLs)
+        log(f"   -> Scraping CertSpotter (New SSLs)...", "INFO")
         try:
-            urlscan_url = f"https://urlscan.io/api/v1/search/?q=domain:myshopify.com AND date:>now-7d AND {kw_clean}&size=300"
-            r = requests.get(urlscan_url, timeout=15)
+            r = requests.get('https://api.certspotter.com/v1/issuances?domain=myshopify.com&include_subdomains=true&expand=dns_names&match_wildcards=false', timeout=10)
+            if r.status_code == 200:
+                for cert in r.json():
+                    for name in cert.get('dns_names', []):
+                        if name.endswith('.myshopify.com') and self.kw_clean in name.lower():
+                            urls.add(f"https://{name}")
+        except Exception: pass
+
+        # 4. URLScan.io
+        log(f"   -> Scraping URLScan...", "INFO")
+        try:
+            urlscan_url = f"https://urlscan.io/api/v1/search/?q=domain:myshopify.com AND date:>now-7d AND {self.kw_clean}&size=300"
+            r = requests.get(urlscan_url, timeout=10)
             if r.status_code == 200:
                 for res in r.json().get('results', []):
-                    page_url = res.get('page', {}).get('url', '')
-                    m = MYSHOPIFY_RE.search(page_url)
+                    m = MYSHOPIFY_RE.search(res.get('page', {}).get('url', ''))
                     if m: urls.add(f"https://{m.group(1)}.myshopify.com")
-        except Exception:
-            pass
+        except Exception: pass
 
         urls_list = list(urls)
         random.shuffle(urls_list)
-        log(f"📦 Scraper found {len(urls_list)} NEW (1-Week Old) stores to test!", "SUCCESS")
+        log(f"📦 Worker found {len(urls_list)} raw stores to process!", "SUCCESS")
         return urls_list
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PHASE 2: CHECKOUT PAGE PAYMENT GATEWAY TEST (100% Accurate)
-# ─────────────────────────────────────────────────────────────────────────────
-def check_store_target(base_url, session, keyword):
-    ua = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-          'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36')
-    headers = {
-        'User-Agent': ua,
-        'Accept': 'text/html,application/xhtml+xml,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-    }
-
-    try:
-        # Step 1: Visit Store
-        r = session.get(base_url, headers=headers, timeout=10, allow_redirects=True)
-        if r.status_code != 200:
-            return {"is_shopify": False, "is_lead": False}
-            
-        html_lower = r.text.lower()
-        if 'shopify' not in html_lower and 'cdn.shopify.com' not in html_lower:
-            return {"is_shopify": False, "is_lead": False}
-
-        # 🚨 PASSWORD CHECK
-        if '/password' in r.url or 'password-page' in html_lower or 'opening soon' in html_lower:
-            return {"is_shopify": True, "is_lead": False, "reason": "Password Protected (Skipping)"}
-
-        # Step 2: Add to Cart & Go to Checkout
+    def is_store_new(self, base_url):
+        """
+        স্টোরের products.json ফাইল চেক করে দেখবে স্টোরটি গত ৭-১৪ দিনের মধ্যে বানানো কিনা।
+        """
         try:
-            prod_req = session.get(f"{base_url}/products.json?limit=1", headers=headers, timeout=10)
-            if prod_req.status_code != 200:
-                return {"is_shopify": True, "is_lead": False, "reason": "No products.json"}
-
-            products = prod_req.json().get('products', [])
+            r = self.session.get(f"{base_url}/products.json?limit=5", headers=self.headers, timeout=10)
+            if r.status_code != 200:
+                return False, "No products.json"
+            
+            products = r.json().get('products', [])
             if not products:
-                return {"is_shopify": True, "is_lead": False, "reason": "0 products, cannot test checkout"}
+                return True, "0 products (Likely new)"
+
+            # Check the creation date of the oldest product in the list
+            oldest_date_str = products[-1].get('created_at') or products[-1].get('published_at')
+            if oldest_date_str:
+                p_date = datetime.strptime(oldest_date_str[:10], '%Y-%m-%d')
+                days_old = (datetime.now() - p_date).days
+                
+                # 🚨 STRICT 14-DAYS FILTER
+                if days_old > 14:
+                    return False, f"Old Store (Products are {days_old} days old)"
+                else:
+                    return True, f"New Store ({days_old} days old)"
+            return True, "Date unknown, assuming new"
+        except Exception:
+            return False, "Age check failed"
+
+    def test_checkout(self, base_url):
+        """
+        চেকআউট পেজে গিয়ে পেমেন্ট গেটওয়ে চেক করবে।
+        """
+        try:
+            r = self.session.get(base_url, headers=self.headers, timeout=10, allow_redirects=True)
+            if r.status_code != 200: return {"is_lead": False, "reason": "Dead store"}
+                
+            html_lower = r.text.lower()
+            if 'shopify' not in html_lower and 'cdn.shopify.com' not in html_lower:
+                return {"is_lead": False, "reason": "Not Shopify"}
+
+            # Niche Check
+            if self.keyword not in html_lower and self.kw_clean not in base_url:
+                return {"is_lead": False, "reason": "Keyword not found"}
+
+            # Password Check
+            if '/password' in r.url or 'password-page' in html_lower or 'opening soon' in html_lower:
+                return {"is_lead": False, "reason": "Password Protected (Skipping)"}
+
+            # 🚨 AGE VERIFICATION (Is it new?)
+            is_new, age_reason = self.is_store_new(base_url)
+            if not is_new:
+                return {"is_lead": False, "reason": age_reason}
+
+            # Add to Cart & Checkout
+            prod_req = self.session.get(f"{base_url}/products.json?limit=1", headers=self.headers, timeout=10)
+            products = prod_req.json().get('products', [])
+            if not products: return {"is_lead": False, "reason": "0 products"}
 
             variant_id = products[0]['variants'][0]['id']
-            
-            # Adding product to cart
-            session.post(f"{base_url}/cart/add.js",
-                json={"id": variant_id, "quantity": 1},
-                headers={**headers, 'Content-Type': 'application/json'}, timeout=10)
+            self.session.post(f"{base_url}/cart/add.js", json={"id": variant_id, "quantity": 1}, headers={**self.headers, 'Content-Type': 'application/json'}, timeout=10)
 
-            # Visiting Checkout Page
-            chk_req = session.get(f"{base_url}/checkout", headers=headers, timeout=15, allow_redirects=True)
+            chk_req = self.session.get(f"{base_url}/checkout", headers=self.headers, timeout=15, allow_redirects=True)
             chk_html = chk_req.text.lower()
 
-            # Step 3: Scan Checkout Page for Payment Gateways
-            
-            # 1. Check for explicit "No Payment" errors
-            error_footprints = [
-                "isn't accepting payments", "not accepting payments", "no payment methods", 
-                "payment provider hasn't been set up", "this store is unavailable", 
-                "cannot accept payments", "can't accept payments", "checkout is disabled"
-            ]
+            # Explicit no-payment error
+            error_footprints = ["isn't accepting payments", "not accepting payments", "no payment methods", "payment provider hasn't been set up", "this store is unavailable", "cannot accept payments", "checkout is disabled"]
             for phrase in error_footprints:
                 if phrase in chk_html:
-                    return {"is_shopify": True, "is_lead": True, "reason": f"CONFIRMED NO PAYMENT: '{phrase}'"}
+                    return {"is_lead": True, "reason": f"CONFIRMED NO PAYMENT: '{phrase}'"}
 
-            # 2. Check for Card/Payment options (If found -> REJECT)
-            payment_kws = [
-                'visa', 'mastercard', 'amex', 'american express', 'paypal', 
-                'credit card', 'debit card', 'card number', 'stripe', 'klarna', 
-                'afterpay', 'shop pay', 'apple pay', 'google pay'
-            ]
+            # Payment keywords = HAS payment (REJECT)
+            payment_kws = ['visa', 'mastercard', 'amex', 'paypal', 'credit card', 'debit card', 'card number', 'stripe', 'klarna', 'afterpay', 'shop pay', 'apple pay', 'google pay']
             found_pay = [kw for kw in payment_kws if kw in chk_html]
             if found_pay:
-                return {"is_shopify": True, "is_lead": False, "reason": f"Payment Gateway Found on Checkout: {found_pay[:2]}"}
+                return {"is_lead": False, "reason": f"Payment Gateway Found: {found_pay[:2]}"}
 
-            # 3. If redirected away from checkout
             if base_url.replace('https://', '') in chk_req.url and '/checkout' not in chk_req.url:
-                return {"is_shopify": True, "is_lead": True, "reason": "Redirected from checkout = no payment"}
+                return {"is_lead": True, "reason": "Redirected from checkout = no payment"}
 
-            # 4. Reached checkout, but NO card options found in HTML
             if any(s in chk_html for s in ['contact information', 'shipping address', 'order summary']):
-                return {"is_shopify": True, "is_lead": True, "reason": "Checkout OK, but NO Card/Payment options found!"}
+                return {"is_lead": True, "reason": "Checkout OK, but NO Card/Payment options found!"}
 
-            return {"is_shopify": True, "is_lead": False, "reason": "Inconclusive Checkout Page"}
+            return {"is_lead": False, "reason": "Inconclusive Checkout Page"}
 
         except Exception as e:
-            return {"is_shopify": True, "is_lead": False, "reason": f"Checkout test failed"}
-            
-    except Exception:
-        return {"is_shopify": False, "is_lead": False}
+            return {"is_lead": False, "reason": "Checkout test failed"}
 
 # ── Store info extraction ─────────────────────────────────────────────────────
 EMAIL_RE = re.compile(r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}')
@@ -311,15 +322,11 @@ def _run():
     tpl = templates[0]
     log(f"📧 Template loaded: '{tpl['name']}'", "INFO")
 
-    session = requests.Session()
     total_leads = 0
 
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
-    log("🚀 PHASE 1 — PYTHON LIBRARY SCRAPER (1 WEEK FILTER)", "SUCCESS")
+    log("🚀 PHASE 1 — SHOPIFY SCRAPER WORKER (NEW STORES ONLY)", "SUCCESS")
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
-
-    # Initialize the Python Scraper
-    scraper = PythonLibraryScraper()
 
     for kw_row in ready_kws:
         if not automation_running: break
@@ -333,26 +340,23 @@ def _run():
 
         log(f"\n🎯 Keyword: [{keyword}] | Country: [{country}]", "INFO")
 
-        # 1. Scrape ONLY 1-week old stores using Python Library
-        store_urls = scraper.get_new_stores(keyword)
+        # Initialize Worker
+        worker = ShopifyScraperWorker(keyword, country)
+        store_urls = worker.fetch_raw_urls()
 
         if not store_urls:
-            log("⚠️  No new stores found in the last 7 days for this keyword.", "WARN")
+            log("⚠️  No stores found. Moving to next...", "WARN")
             call_sheet({'action': 'mark_keyword_used', 'id': kw_id, 'leads_found': 0})
             continue
 
-        log(f"🔍 Checking {len(store_urls)} stores: Adding to Cart -> Going to Checkout -> Checking for Card/Paypal...", "INFO")
+        log(f"🔍 Checking {len(store_urls)} stores: Age Check -> Add to Cart -> Checkout Test...", "INFO")
 
-        # 2. Check Checkout Page and Save Lead
         for idx, url in enumerate(store_urls):
             if not automation_running: break
             if total_leads >= min_leads: break
 
             try:
-                target_info = check_store_target(url, session, keyword)
-
-                if not target_info.get("is_shopify"):
-                    continue 
+                target_info = worker.test_checkout(url)
 
                 if not target_info.get("is_lead"):
                     reason = target_info.get('reason', '')
@@ -363,7 +367,7 @@ def _run():
                 # ✅ LEAD FOUND!
                 log(f"   [{idx+1}/{len(store_urls)}] 🎯 100% MATCH: {target_info.get('reason')} — collecting info...", "SUCCESS")
                 
-                info = get_store_info(url, session)
+                info = get_store_info(url, worker.session)
                 
                 save_resp = call_sheet({
                     'action': 'save_lead', 'store_name': info['store_name'],
