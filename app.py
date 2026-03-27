@@ -12,13 +12,6 @@ from datetime import datetime
 import logging
 import os
 
-# DuckDuckGo for Unlimited Free Searches
-try:
-    from duckduckgo_search import DDGS
-    DDGS_AVAILABLE = True
-except ImportError:
-    DDGS_AVAILABLE = False
-
 logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 
@@ -55,34 +48,35 @@ def log(message, level="INFO"):
 MYSHOPIFY_RE = re.compile(r'([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com')
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PHASE 1: FETCH STORES (No Date Filter Here - We filter later using Python)
+# PHASE 1: FETCH STORES (Using SerpAPI to avoid IP Blocks)
 # ─────────────────────────────────────────────────────────────────────────────
-def get_store_urls(keyword):
+def get_store_urls(keyword, serpapi_key):
     urls = set()
     kw_clean = keyword.lower().replace(' ', '')
     
     log(f"🚀 SCRAPING MODE: Fetching stores for '{keyword}'...", "INFO")
 
-    # SOURCE 1: DuckDuckGo (Broad Search)
-    if DDGS_AVAILABLE:
-        log(f"   -> Scraping DuckDuckGo...", "INFO")
+    # SOURCE 1: SerpAPI (Google Search - Bypasses IP Blocks)
+    if serpapi_key:
+        log(f"   -> Scraping Google via SerpAPI...", "INFO")
         queries =[
             f'site:myshopify.com "{keyword}"',
-            f'site:myshopify.com "{keyword}" "opening soon"',
-            f'site:myshopify.com "{keyword}" "isn\'t accepting payments right now"'
+            f'site:myshopify.com intitle:"{keyword}"',
+            f'site:myshopify.com "{keyword}" "opening soon"'
         ]
-        try:
-            with DDGS() as ddgs:
-                for q in queries:
-                    if len(urls) > 300: break
-                    results = ddgs.text(q, max_results=100)
-                    if results:
-                        for r in results:
-                            m = MYSHOPIFY_RE.search(r.get('href', ''))
+        for q in queries:
+            if len(urls) > 500: break
+            for start in [0, 100, 200]: # First 3 pages
+                try:
+                    params = {'api_key': serpapi_key, 'engine': 'google', 'q': q, 'num': 100, 'start': start}
+                    res = requests.get('https://serpapi.com/search', params=params, timeout=15)
+                    if res.status_code == 200:
+                        for item in res.json().get('organic_results',[]):
+                            m = MYSHOPIFY_RE.search(item.get('link', ''))
                             if m: urls.add(f"https://{m.group(1)}.myshopify.com")
-                    time.sleep(2)
-        except Exception as e:
-            log(f"   DuckDuckGo error: {e}", "WARN")
+                except Exception as e:
+                    pass
+                time.sleep(1)
 
     # SOURCE 2: URLScan.io (Recent Stores)
     log(f"   -> Scraping URLScan...", "INFO")
@@ -97,13 +91,28 @@ def get_store_urls(keyword):
     except Exception:
         pass
 
+    # SOURCE 3: CommonCrawl (Massive Web Archive)
+    log(f"   -> Scraping CommonCrawl Archive...", "INFO")
+    try:
+        cc_url = f"https://index.commoncrawl.org/CC-MAIN-2024-10-index?url=*.myshopify.com/*{kw_clean}*&output=json&limit=300"
+        r = requests.get(cc_url, timeout=15)
+        if r.status_code == 200:
+            for line in r.text.strip().split('\n'):
+                try:
+                    data = json.loads(line)
+                    m = MYSHOPIFY_RE.search(data.get('url', ''))
+                    if m: urls.add(f"https://{m.group(1)}.myshopify.com")
+                except: pass
+    except Exception:
+        pass
+
     urls_list = list(urls)
     random.shuffle(urls_list)
     log(f"📦 Found {len(urls_list)} raw stores to test!", "SUCCESS")
     return urls_list
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PHASE 2: SHOPIFY SCRAPER LOGIC (From practical-data-science/ShopifyScraper)
+# PHASE 2: SHOPIFY SCRAPER LOGIC (Strict 7-Days Age Check via products.json)
 # ─────────────────────────────────────────────────────────────────────────────
 def is_store_new_via_products(base_url, session, headers):
     """
@@ -125,9 +134,12 @@ def is_store_new_via_products(base_url, session, headers):
         for p in products:
             date_str = p.get('created_at') or p.get('published_at')
             if date_str:
-                p_date = datetime.strptime(date_str[:10], '%Y-%m-%d')
-                if oldest_date is None or p_date < oldest_date:
-                    oldest_date = p_date
+                try:
+                    p_date = datetime.strptime(date_str[:10], '%Y-%m-%d')
+                    if oldest_date is None or p_date < oldest_date:
+                        oldest_date = p_date
+                except:
+                    pass
                     
         if oldest_date:
             days_old = (datetime.now() - oldest_date).days
@@ -139,7 +151,7 @@ def is_store_new_via_products(base_url, session, headers):
                 
         return True, "Could not determine age, assuming new", products[0]['variants'][0]['id']
     except Exception as e:
-        return False, f"Error checking age: {e}", None
+        return False, f"Error checking age", None
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PHASE 3: CHECKOUT HTML ANALYSIS
@@ -268,7 +280,7 @@ Return ONLY valid JSON: {{"subject": "...", "body": "<p>...</p>"}}"""
             "https://api.groq.com/openai/v1/chat/completions",
             headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
             json={"model": "llama-3.1-8b-instant",
-                  "messages":[{"role": "user", "content": prompt}],
+                  "messages": [{"role": "user", "content": prompt}],
                   "max_tokens": 500, "temperature": 0.7},
             timeout=20)
         if r.status_code == 200:
@@ -301,13 +313,17 @@ def _run():
         log(f"❌ Apps Script: {cfg_resp['error']}", "ERROR"); return
 
     cfg = cfg_resp.get('config', {})
+    serpapi_key = cfg.get('serpapi_key', '').strip()
     groq_key = cfg.get('groq_api_key', '').strip()
     min_leads = int(cfg.get('min_leads', 50) or 50)
+
+    if not serpapi_key:
+        log("❌ SerpAPI Key missing! Please add it in CFG screen.", "ERROR"); return
 
     log(f"✅ Config loaded | Target: {min_leads} leads", "INFO")
 
     kw_resp = call_sheet({'action': 'get_keywords'})
-    ready_kws =[k for k in kw_resp.get('keywords', []) if k.get('status') == 'ready']
+    ready_kws = [k for k in kw_resp.get('keywords', []) if k.get('status') == 'ready']
     if not ready_kws:
         log("❌ No READY keywords!", "ERROR"); return
     log(f"🗝️  {len(ready_kws)} keywords ready", "INFO")
@@ -339,7 +355,7 @@ def _run():
         log(f"\n🎯 Keyword: [{keyword}] | Country: [{country}]", "INFO")
 
         # 1. Fetch raw stores
-        store_urls = get_store_urls(keyword)
+        store_urls = get_store_urls(keyword, serpapi_key)
 
         if not store_urls:
             log("⚠️  No stores found. Moving to next...", "WARN")
@@ -366,7 +382,7 @@ def _run():
                     continue
 
                 # ✅ LEAD FOUND!
-                log(f"   [{idx+1}/{len(store_urls)}] 🎯 100% MATCH: {target_info.get('reason')} — collecting info...", "SUCCESS")
+                log(f"[{idx+1}/{len(store_urls)}] 🎯 100% MATCH: {target_info.get('reason')} — collecting info...", "SUCCESS")
                 
                 info = get_store_info(url, session)
                 
@@ -400,7 +416,7 @@ def _run():
 
     time.sleep(10)
     leads_resp = call_sheet({'action': 'get_leads'})
-    all_leads  = leads_resp.get('leads',[]) if not leads_resp.get('error') else []
+    all_leads  = leads_resp.get('leads', []) if not leads_resp.get('error') else[]
     pending    =[l for l in all_leads if l.get('email') and '@' in str(l.get('email','')) and l.get('email_sent') != 'sent']
     
     log(f"📨 {len(pending)} leads with email addresses to contact", "INFO")
