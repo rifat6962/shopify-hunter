@@ -23,24 +23,28 @@ scheduler = BackgroundScheduler()
 scheduler.start()
 
 # ── Apps Script communication ─────────────────────────────────────────────────
+
 def call_sheet(payload):
     script_url = os.environ.get('APPS_SCRIPT_URL', '')
     if not script_url:
         return {'error': 'APPS_SCRIPT_URL not set'}
+
     for attempt in range(3):
         try:
             r = requests.post(script_url, json=payload, timeout=45,
                               headers={'Content-Type': 'application/json'})
             return r.json()
         except requests.exceptions.Timeout:
-            log(f"Sheet API timeout ({attempt+1}/3)", "WARN")
+            log(f"Sheet API timeout (Attempt {attempt+1}/3). Retrying...", "WARN")
             time.sleep(3)
         except Exception as e:
-            log(f"Sheet API error ({attempt+1}/3): {e}", "WARN")
+            log(f"Sheet API error (Attempt {attempt+1}/3): {e}", "WARN")
             time.sleep(3)
+
     return {'error': 'Sheet API failed after 3 retries'}
 
 # ── Logging ───────────────────────────────────────────────────────────────────
+
 def log(message, level="INFO"):
     entry = {
         'time': datetime.now().strftime('%H:%M:%S'),
@@ -50,164 +54,128 @@ def log(message, level="INFO"):
     log_queue.put(json.dumps(entry))
     print(f"[{level}] {message}")
 
-MYSHOPIFY_RE = re.compile(r'https?://([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com')
+# ── AI Keyword Expansion ──────────────────────────────────────────────────────
 
-# ─────────────────────────────────────────────────────────────────────────────
-# AI KEYWORD EXPANSION — 1 keyword → 200 variations using Groq
-# ─────────────────────────────────────────────────────────────────────────────
-def expand_keywords_with_ai(base_keyword, country, groq_key):
+def expand_keywords_with_ai(seed_keyword, country, groq_key, count=200):
     """
-    Use Groq AI to generate 200 keyword variations from one base keyword.
-    These are used as Shopify subdomain search queries.
-    Returns list of 200 keyword strings.
+    একটা seed keyword থেকে AI দিয়ে 200টা variation keyword বানাবে।
+    এগুলো দিয়ে Google ও URLScan এ সার্চ করা হবে।
     """
-    log(f"🤖 AI generating 200 keyword variations for '{base_keyword}'...", "INFO")
+    log(f"🤖 AI generating {count} keyword variations for '{seed_keyword}'...", "INFO")
     try:
         client = Groq(api_key=groq_key)
-        prompt = f"""Generate exactly 200 keyword variations for finding Shopify stores in the '{base_keyword}' niche from {country}.
+        prompt = f"""You are a keyword research expert for finding Shopify stores.
+        
+Seed keyword: "{seed_keyword}"
+Target country: "{country}"
 
-These will be used to search for myshopify.com stores. Include:
-- Direct product terms (e.g., running shoes, leather shoes, kids shoes)
-- Brand-style names (e.g., shoeco, footwear studio, shoe boutique)  
-- Adjective combinations (e.g., luxury footwear, affordable shoes, handmade shoes)
-- Target audience (e.g., womens shoes, mens footwear, baby shoes)
-- Style variations (e.g., casual shoes, formal shoes, athletic footwear)
-- Related products (e.g., sneakers, boots, sandals, heels)
+Generate EXACTLY {count} unique search keyword variations. These will be used to find Shopify stores on Google.
 
-Return ONLY a JSON array of 200 strings, nothing else. No explanation.
-Example format: ["keyword1", "keyword2", "keyword3", ...]"""
+Include variations like:
+- Long-tail versions ("buy {seed_keyword} online", "{seed_keyword} store", "{seed_keyword} shop")
+- Niche sub-categories related to "{seed_keyword}"
+- Brand/product style variations
+- Country-specific terms if relevant
+- Synonyms and related terms
+- "{seed_keyword} + common product types"
+- "{seed_keyword} + store type words" (boutique, wholesale, brand, etc.)
+
+RESPOND ONLY with a valid JSON array of {count} strings. No explanation, no markdown, no preamble.
+Example format: ["keyword one", "keyword two", "keyword three"]"""
 
         resp = client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=3000,
+            max_tokens=4000,
             temperature=0.8
         )
         raw = resp.choices[0].message.content.strip()
         raw = re.sub(r'```(?:json)?|```', '', raw).strip()
         keywords = json.loads(raw)
         if isinstance(keywords, list):
-            # Clean and deduplicate
-            keywords = list(set([str(k).strip().lower() for k in keywords if k]))
-            log(f"✅ AI generated {len(keywords)} keyword variations", "INFO")
-            return keywords[:200]
+            # Ensure all are strings and deduplicated
+            keywords = list(set([str(k).strip() for k in keywords if k]))
+            log(f"✅ AI generated {len(keywords)} keyword variations!", "SUCCESS")
+            return keywords[:count]
     except Exception as e:
-        log(f"AI keyword expansion error: {e} — using manual fallback", "WARN")
+        log(f"⚠️ AI keyword expansion failed: {e}. Using fallback variations.", "WARN")
 
     # Fallback: manual variations if AI fails
-    kw = base_keyword.lower()
-    prefixes = ['best', 'top', 'cheap', 'luxury', 'premium', 'handmade',
-                'custom', 'organic', 'modern', 'vintage', 'unique', 'cute',
-                'trendy', 'affordable', 'quality', 'new', 'fresh', 'cool',
-                'awesome', 'amazing', 'stylish', 'cute', 'pretty', 'nice']
-    suffixes = ['shop', 'store', 'boutique', 'co', 'hub', 'mart', 'world',
-                'zone', 'place', 'spot', 'depot', 'pro', 'plus', 'studio',
-                'works', 'market', 'house', 'club', 'online', 'deals']
-    fallback = [kw] + [f"{p} {kw}" for p in prefixes] + [f"{kw} {s}" for s in suffixes]
-    return fallback[:200]
+    base = seed_keyword.lower()
+    fallback_suffixes = [
+        "store", "shop", "online", "buy", "cheap", "wholesale", "brand",
+        "boutique", "sale", "discount", "free shipping", "best", "new",
+        "official", "authentic", "premium", "quality", "review", "2024",
+        "2025", "usa", "uk", "canada", "australia", "europe", "india",
+    ]
+    return [f"{base} {s}" for s in fallback_suffixes]
 
+# ── 1. ADVANCED SCRAPING (URLScan.io + SerpAPI with expanded queries) ─────────
 
-# ─────────────────────────────────────────────────────────────────────────────
-# STORE DISCOVERY — keyword-based subdomain generation + URLScan
-# ─────────────────────────────────────────────────────────────────────────────
-def generate_subdomains_for_keyword(keyword):
-    """Generate myshopify.com subdomain candidates for a keyword."""
-    kw = keyword.lower().strip().replace(' ', '-')
-    kw2 = keyword.lower().strip().replace(' ', '')
-    year = str(datetime.now().year)
+MYSHOPIFY_RE = re.compile(r'https?://([a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9])\.myshopify\.com')
 
-    suffixes = ['shop', 'store', 'co', 'hub', 'mart', 'boutique', 'studio',
-                'place', 'zone', 'depot', 'hq', 'world', 'outlet', 'pro',
-                'plus', 'market', 'house', 'club', 'online', 'direct']
-    prefixes = ['the', 'my', 'best', 'top', 'get', 'buy', 'shop', 'go',
-                'true', 'pure', 'fresh', 'smart', 'cool', 'nice', 'great']
-    numbers = ['1', '2', '24', '25', year, year[2:], '101', '365']
-
-    subs = set()
-    subs.add(kw)
-    subs.add(kw2)
-
-    for s in suffixes:
-        subs.add(f"{kw}-{s}")
-        subs.add(f"{kw2}{s}")
-
-    for p in prefixes:
-        subs.add(f"{p}-{kw}")
-        subs.add(f"{p}{kw2}")
-
-    for n in numbers:
-        subs.add(f"{kw}{n}")
-        subs.add(f"{kw2}{n}")
-
-    result = list(subs)
-    random.shuffle(result)
-    return result
-
-
-def check_subdomain_exists(subdomain):
-    """Quick check if myshopify subdomain is a real Shopify store."""
-    url = f"https://{subdomain}.myshopify.com"
-    try:
-        r = requests.get(
-            f"{url}/products.json?limit=1",
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0"},
-            timeout=5,
-            allow_redirects=True
-        )
-        if r.status_code == 200 and 'products' in r.json():
-            return url
-    except:
-        pass
-    return None
-
-
-def find_stores_for_keyword(keyword, country):
+def find_shopify_stores(keyword, country, serpapi_key):
     """
-    Find Shopify stores for a single keyword using:
-    1. Subdomain generation + direct check
-    2. URLScan.io
-    Returns list of store URLs.
+    URLScan.io + SerpAPI (Past 7 Days) দিয়ে fresh stores খোঁজে।
+    একটা keyword থেকে max stores বের করার জন্য multiple query patterns ব্যবহার করা হয়।
     """
-    found = set()
+    all_urls = set()
+    kw_clean = keyword.lower().replace(' ', '+')
 
-    # Method 1: Subdomain brute-force
-    subdomains = generate_subdomains_for_keyword(keyword)
-    log(f"   Checking {len(subdomains)} subdomain candidates...", "INFO")
-
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    with ThreadPoolExecutor(max_workers=20) as ex:
-        futures = {ex.submit(check_subdomain_exists, sub): sub for sub in subdomains}
-        for future in as_completed(futures):
-            try:
-                result = future.result(timeout=7)
-                if result:
-                    found.add(result)
-            except:
-                pass
-
-    # Method 2: URLScan
+    # METHOD 1: URLScan.io (Real-time newly registered/scanned stores)
+    log(f"   🔍 URLScan.io: '{keyword}'...", "INFO")
     try:
-        kw_clean = keyword.lower().replace(' ', '+')
-        r = requests.get(
-            f"https://urlscan.io/api/v1/search/?q=domain:myshopify.com+AND+{kw_clean}&size=50&sort=time",
-            timeout=10,
-            headers={"User-Agent": "Mozilla/5.0"}
+        urlscan_url = (
+            f"https://urlscan.io/api/v1/search/"
+            f"?q=domain:myshopify.com+AND+{kw_clean}&size=100&sort=time"
         )
+        r = requests.get(urlscan_url, timeout=10)
         if r.status_code == 200:
-            for result in r.json().get('results', []):
+            data = r.json()
+            for result in data.get('results', []):
                 page_url = result.get('page', {}).get('url', '')
                 m = MYSHOPIFY_RE.search(page_url)
                 if m:
-                    found.add(f"https://{m.group(1)}.myshopify.com")
-    except:
-        pass
+                    all_urls.add(f"https://{m.group(1)}.myshopify.com")
+    except Exception as e:
+        log(f"   URLScan error: {e}", "WARN")
 
-    return list(found)
+    # METHOD 2: SerpAPI with multiple query patterns + "Past 7 Days" filter
+    queries = [
+        f'site:myshopify.com "{keyword}"',
+        f'site:myshopify.com "{keyword}" {country}',
+        f'site:myshopify.com "{keyword}" "Welcome to our store"',
+        f'site:myshopify.com "{keyword}" "free shipping"',
+        f'site:myshopify.com intitle:"{keyword}"',
+    ]
 
+    for q in queries:
+        if len(all_urls) > 200:
+            break
+        try:
+            params = {
+                'api_key': serpapi_key,
+                'engine': 'google',
+                'q': q,
+                'num': 100,
+                'tbs': 'qdr:w'  # Past 7 days only
+            }
+            res = requests.get('https://serpapi.com/search', params=params, timeout=15)
+            if res.status_code == 200:
+                for item in res.json().get('organic_results', []):
+                    link = item.get('link', '')
+                    m = MYSHOPIFY_RE.match(link)
+                    if m:
+                        all_urls.add(f"https://{m.group(1)}.myshopify.com")
+        except Exception:
+            pass
+        time.sleep(0.8)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PAYMENT CHECK — exact same logic, proven to work
-# ─────────────────────────────────────────────────────────────────────────────
+    urls_list = list(all_urls)
+    return urls_list
+
+# ── 2. STRICT CHECKOUT TEST (Unchanged — working perfectly) ──────────────────
+
 def check_store_target(base_url, session):
     ua = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
           'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36')
@@ -216,49 +184,72 @@ def check_store_target(base_url, session):
         'Accept': 'text/html,application/xhtml+xml,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.9',
     }
+
     try:
         r = session.get(base_url, headers=headers, timeout=10, allow_redirects=True)
         if r.status_code != 200:
             return {"is_shopify": False, "is_lead": False}
+
         html = r.text.lower()
         if 'shopify' not in html and 'cdn.shopify.com' not in html:
             return {"is_shopify": False, "is_lead": False}
+
         if '/password' in r.url or 'password-page' in html or 'opening soon' in html:
-            return {"is_shopify": True, "is_lead": False, "reason": "Password Protected"}
+            return {"is_shopify": True, "is_lead": False, "reason": "Password Protected (Skipping)"}
+
         try:
             prod_req = session.get(f"{base_url}/products.json?limit=1", headers=headers, timeout=10)
             if prod_req.status_code == 200:
                 prod_data = prod_req.json()
                 if 'products' in prod_data and len(prod_data['products']) > 0:
                     variant_id = prod_data['products'][0]['variants'][0]['id']
+
                     session.post(f"{base_url}/cart/add.js",
                                  json={"id": variant_id, "quantity": 1},
                                  headers=headers, timeout=10)
+
                     chk_req = session.get(f"{base_url}/checkout", headers=headers, timeout=15)
                     chk_html = chk_req.text.lower()
-                    if 'checkout' not in chk_html and 'contact information' not in chk_html and "isn't accepting payments" not in chk_html:
-                        return {"is_shopify": True, "is_lead": False, "reason": "Could not reach checkout"}
-                    payment_keywords = ['visa', 'mastercard', 'amex', 'paypal', 'credit card',
-                                        'debit card', 'card number', 'stripe', 'klarna', 'afterpay',
-                                        'shop pay', 'apple pay', 'google pay']
+
+                    if ('checkout' not in chk_html and
+                            'contact information' not in chk_html and
+                            "isn't accepting payments" not in chk_html):
+                        return {"is_shopify": True, "is_lead": False,
+                                "reason": "Could not reach valid checkout page"}
+
+                    payment_keywords = [
+                        'visa', 'mastercard', 'amex', 'paypal', 'credit card',
+                        'debit card', 'card number', 'stripe', 'klarna',
+                        'afterpay', 'shop pay', 'apple pay', 'google pay'
+                    ]
                     for pk in payment_keywords:
                         if pk in chk_html:
-                            return {"is_shopify": True, "is_lead": False, "reason": f"Has payment ('{pk}')"}
+                            return {"is_shopify": True, "is_lead": False,
+                                    "reason": f"Active Checkout ('{pk}' found)"}
+
                     if "isn't accepting payments" in chk_html or "not accepting payments" in chk_html:
-                        return {"is_shopify": True, "is_lead": True, "reason": "Checkout Disabled — No Payment!"}
-                    return {"is_shopify": True, "is_lead": True, "reason": "No Payment Options Found!"}
-            return {"is_shopify": True, "is_lead": False, "reason": "No products to test"}
-        except Exception as e:
+                        return {"is_shopify": True, "is_lead": True,
+                                "reason": "Live Store -> Checkout Disabled (Explicit Error)!"}
+
+                    return {"is_shopify": True, "is_lead": True,
+                            "reason": "No Payment Options Found on Checkout!"}
+
+            return {"is_shopify": True, "is_lead": False,
+                    "reason": "Could not test checkout (No products)"}
+
+        except Exception:
             return {"is_shopify": True, "is_lead": False, "reason": "Checkout test failed"}
-    except Exception as e:
+
+    except Exception:
         return {"is_shopify": False, "is_lead": False}
 
+# ── Store info extraction ──────────────────────────────────────────────────────
 
-# ── Store info extraction ─────────────────────────────────────────────────────
-EMAIL_RE = re.compile(r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}')
+EMAIL_RE = re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}')
 SKIP_EMAIL_DOMAINS = ['example', 'sentry', 'wixpress', 'shopify', '.png', '.jpg',
-                      '.svg', 'noreply', 'domain.com', 'no-reply']
-PHONE_RE = re.compile(r'(\+\d{1,3}[\s\-]?\(?\d{1,4}\)?[\s\-]?\d{3,4}[\s\-]?\d{3,4})')
+                      '.svg', 'noreply', 'domain.com']
+PHONE_RE = re.compile(r'(\+\d{1,3}[\s-]?\(?\d{3}\)?[\s-]?\d{3,4}[\s-]?\d{3,4})')
+
 
 def extract_email(html, soup):
     for tag in soup.find_all('a', href=True):
@@ -273,9 +264,11 @@ def extract_email(html, soup):
             return m
     return None
 
+
 def extract_phone(html):
     m = PHONE_RE.search(html)
     return m.group(0).strip() if m else None
+
 
 def get_store_info(base_url, session):
     headers = {
@@ -296,9 +289,9 @@ def get_store_info(base_url, session):
             result['store_name'] = title.text.strip()[:80]
         result['email'] = extract_email(html, soup)
         result['phone'] = extract_phone(html)
+
         if not result['email']:
-            for path in ['/pages/contact', '/contact', '/pages/about-us',
-                         '/pages/contact-us', '/pages/about']:
+            for path in ['/pages/contact', '/contact', '/pages/about-us']:
                 try:
                     pr = session.get(base_url + path, headers=headers, timeout=8)
                     if pr.status_code == 200:
@@ -312,36 +305,51 @@ def get_store_info(base_url, session):
                 except:
                     continue
     except Exception as e:
-        pass
+        log(f"Info extraction error: {e}", "WARN")
     return result
 
-
 # ── AI Email generation ───────────────────────────────────────────────────────
+
 def generate_email(tpl_subject, tpl_body, lead, groq_key):
     try:
         client = Groq(api_key=groq_key)
-        prompt = f"""Write a short cold email to a Shopify store owner.
+        prompt = f"""You are writing a short cold email to a Shopify store owner.
+
 Store: {lead.get('store_name', 'the store')}
+URL: {lead.get('url', '')}
 Country: {lead.get('country', '')}
-Problem: NO payment gateway — cannot accept payments.
-Base subject: {tpl_subject}
-Base body: {tpl_body}
-Rules: 80-100 words, no spam words, mention store name once, 1 soft CTA, HTML <p> tags.
-Return ONLY valid JSON: {{"subject": "...", "body": "<p>...</p>"}}"""
+Problem: This store has NO payment gateway — customers cannot pay!
+
+Base template:
+Subject: {tpl_subject}
+Body: {tpl_body}
+
+Rules:
+- 80-100 words MAX
+- Zero spam trigger words (FREE, GUARANTEED, ACT NOW, etc.)
+- Mention store name once, naturally
+- Helpful tone, not pushy
+- End with ONE soft question
+- Use HTML <p> tags
+
+Respond ONLY with valid JSON, nothing else:
+{{"subject": "...", "body": "<p>...</p><p>...</p>"}}"""
+
         resp = client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=500, temperature=0.7
+            max_tokens=500,
+            temperature=0.7
         )
         raw = re.sub(r'```(?:json)?|```', '', resp.choices[0].message.content.strip()).strip()
         data = json.loads(raw)
         return data.get('subject', tpl_subject), data.get('body', f'<p>{tpl_body}</p>')
     except Exception as e:
-        log(f"Groq error: {e}", "WARN")
+        log(f"Groq error ({e}) — using template", "WARN")
         return tpl_subject, f'<p>{tpl_body}</p>'
 
-
 # ── Main automation ───────────────────────────────────────────────────────────
+
 def run_automation():
     global automation_running
     automation_running = True
@@ -353,80 +361,109 @@ def run_automation():
         log(traceback.format_exc()[:600], "ERROR")
     finally:
         automation_running = False
-        log("🔴 Automation stopped", "INFO")
+        log("🔴 Automation stopped (All tasks finished)", "INFO")
+
 
 def _run():
     global automation_running
 
+    # ── Load config ──────────────────────────────────────────────────────────
     log("📋 Loading config from Google Sheet...", "INFO")
     cfg_resp = call_sheet({'action': 'get_config'})
+
     if cfg_resp.get('error'):
-        log(f"❌ Cannot reach Apps Script: {cfg_resp['error']}", "ERROR"); return
+        log(f"❌ Cannot reach Apps Script: {cfg_resp['error']}", "ERROR")
+        return
 
     cfg = cfg_resp.get('config', {})
-    groq_key  = cfg.get('groq_api_key', '').strip()
-    min_leads = int(cfg.get('min_leads', 50) or 50)
+    groq_key    = cfg.get('groq_api_key', '').strip()
+    serpapi_key = cfg.get('serpapi_key', '').strip()
+    min_leads   = int(cfg.get('min_leads', 50) or 50)
 
     if not groq_key:
-        log("❌ Groq API Key missing", "ERROR"); return
+        log("❌ Groq API Key missing — go to CFG screen → save", "ERROR")
+        return
+    if not serpapi_key:
+        log("❌ SerpAPI Key missing — go to CFG screen → save", "ERROR")
+        return
+
     log(f"✅ Config loaded | Target: {min_leads} leads", "INFO")
 
-    # Load base keywords from sheet
+    # ── Load keywords from Sheet ─────────────────────────────────────────────
     kw_resp = call_sheet({'action': 'get_keywords'})
     ready_kws = [k for k in kw_resp.get('keywords', []) if k.get('status') == 'ready']
-    if not ready_kws:
-        log("❌ No READY keywords!", "ERROR"); return
-    log(f"🗝️  {len(ready_kws)} base keywords ready", "INFO")
 
+    if not ready_kws:
+        log("❌ No READY keywords! Add keywords in Leads screen or click Reset Used", "ERROR")
+        return
+
+    log(f"🗝️  {len(ready_kws)} seed keywords ready", "INFO")
+
+    # ── Load template ────────────────────────────────────────────────────────
     tpl_resp = call_sheet({'action': 'get_templates'})
     templates = tpl_resp.get('templates', [])
     if not templates:
-        log("❌ No email template!", "ERROR"); return
+        log("❌ No email template! Add one in Email screen first", "ERROR")
+        return
     tpl = templates[0]
-    log(f"📧 Template: '{tpl['name']}'", "INFO")
+    log(f"📧 Template loaded: '{tpl['name']}'", "INFO")
 
+    # ── Phase 1: Lead collection ──────────────────────────────────────────────
     session = requests.Session()
     session.max_redirects = 3
     total_leads = 0
 
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
-    log("🚀 PHASE 1 — AI KEYWORD EXPANSION + STORE HUNTING", "SUCCESS")
-    log(f"🎯 Target: {min_leads} leads", "INFO")
+    log("🚀 PHASE 1 — AI KEYWORD EXPANSION + STORE SCRAPING", "SUCCESS")
+    log(f"🎯 Target: {min_leads} leads | Seed keywords: {len(ready_kws)}", "INFO")
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
 
-    for base_kw_row in ready_kws:
-        if not automation_running: break
+    for kw_row in ready_kws:
+        if not automation_running:
+            break
         if total_leads >= min_leads:
-            log(f"🎯 Target reached! ({total_leads}/{min_leads})", "SUCCESS"); break
+            log(f"🎯 Target reached! ({total_leads}/{min_leads})", "SUCCESS")
+            break
 
-        base_keyword = base_kw_row.get('keyword', '')
-        country      = base_kw_row.get('country', '')
-        kw_id        = base_kw_row.get('id', '')
+        seed_keyword = kw_row.get('keyword', '')
+        country      = kw_row.get('country', '')
+        kw_id        = kw_row.get('id', '')
         kw_leads     = 0
 
-        log(f"\n🔑 Base Keyword: [{base_keyword}] | Country: [{country}]", "INFO")
+        log(f"\n🌱 SEED KEYWORD: [{seed_keyword}] | Country: [{country}]", "INFO")
 
-        # ── STEP 1: AI generates 200 keyword variations ───────────────────────
-        expanded_keywords = expand_keywords_with_ai(base_keyword, country, groq_key)
+        # ── STEP A: AI generates 200 keyword variations from this seed ────────
+        expanded_keywords = expand_keywords_with_ai(seed_keyword, country, groq_key, count=200)
         log(f"📋 Processing {len(expanded_keywords)} AI-generated keyword variations...", "INFO")
 
-        # ── STEP 2: Process each keyword one by one ───────────────────────────
-        for kw_idx, keyword in enumerate(expanded_keywords):
-            if not automation_running: break
-            if total_leads >= min_leads: break
+        # ── STEP B: Process each keyword one by one ────────────────────────────
+        for idx, keyword in enumerate(expanded_keywords):
+            if not automation_running:
+                break
+            if total_leads >= min_leads:
+                break
 
-            log(f"\n   [{kw_idx+1}/{len(expanded_keywords)}] Searching: '{keyword}'", "INFO")
+            log(f"\n   [{idx+1}/{len(expanded_keywords)}] Keyword: '{keyword}'", "INFO")
 
-            store_urls = find_stores_for_keyword(keyword, country)
+            # Search for stores using this keyword
+            try:
+                store_urls = find_shopify_stores(keyword, country, serpapi_key)
+            except Exception as e:
+                log(f"   Search failed: {e}", "WARN")
+                store_urls = []
 
             if not store_urls:
+                log(f"   ⚠️  No URLs found — skipping", "WARN")
                 continue
 
-            log(f"   Found {len(store_urls)} stores — checking payment...", "INFO")
+            log(f"   🔍 Found {len(store_urls)} stores — checking checkout...", "INFO")
 
+            # ── STEP C: Check each store's checkout ───────────────────────────
             for url in store_urls:
-                if not automation_running: break
-                if total_leads >= min_leads: break
+                if not automation_running:
+                    break
+                if total_leads >= min_leads:
+                    break
 
                 try:
                     target_info = check_store_target(url, session)
@@ -435,10 +472,13 @@ def _run():
                         continue
 
                     if not target_info.get("is_lead"):
-                        continue  # Silent skip — has payment
+                        log(f"      🚫 REJECTED: {target_info.get('reason')} — {url}", "WARN")
+                        time.sleep(0.3)
+                        continue
 
-                    # ✅ LEAD FOUND!
-                    log(f"   🎯 {target_info.get('reason')} — collecting info...", "SUCCESS")
+                    # ✅ Lead found!
+                    log(f"      🎯 MATCH: {target_info.get('reason')} — collecting info...", "SUCCESS")
+
                     info = get_store_info(url, session)
 
                     save_resp = call_sheet({
@@ -448,66 +488,84 @@ def _run():
                         'email': info['email'] or '',
                         'phone': info['phone'] or '',
                         'country': country,
-                        'keyword': keyword
+                        'keyword': keyword,
+                        'seed_keyword': seed_keyword
                     })
 
                     if save_resp.get('status') == 'duplicate':
-                        log(f"   ⏭️  Duplicate", "INFO"); continue
+                        log(f"      ⏭️  Duplicate — skipped", "INFO")
+                        continue
 
-                    total_leads += 1; kw_leads += 1
-                    email_str = f"📧 {info['email']}" if info['email'] else "⚠ no email"
-                    log(f"   ✅ LEAD #{total_leads} → {info['store_name']} | {email_str}", "SUCCESS")
-                    time.sleep(random.uniform(1, 2))
+                    total_leads += 1
+                    kw_leads += 1
+                    email_display = info['email'] or '⚠ no email found'
+                    log(f"      ✅ LEAD #{total_leads} → {info['store_name']} | {email_display}", "SUCCESS")
+                    time.sleep(random.uniform(1.5, 3))
 
-                except Exception as e:
+                except Exception:
                     continue
 
-        # Mark base keyword as used
-        call_sheet({'action': 'mark_keyword_used', 'id': kw_id, 'leads_found': kw_leads})
-        log(f"✅ '{base_keyword}' done → {kw_leads} leads found", "SUCCESS")
+            # Small delay between keywords to avoid rate limiting
+            time.sleep(random.uniform(0.5, 1.5))
 
-    # ── PHASE 2: Email outreach ───────────────────────────────────────────────
+        # Mark seed keyword as used
+        call_sheet({'action': 'mark_keyword_used', 'id': kw_id, 'leads_found': kw_leads})
+        log(f"\n✅ Seed keyword '{seed_keyword}' done → {kw_leads} leads found", "SUCCESS")
+
+    # ── Phase 2: Email outreach ───────────────────────────────────────────────
     log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
-    log(f"📊 Scraping done! Total leads: {total_leads}", "SUCCESS")
-    log("📧 PHASE 2 — EMAIL OUTREACH", "INFO")
+    log(f"📊 Scraping done! Total leads collected: {total_leads}", "SUCCESS")
+    log("📧 PHASE 2 — EMAIL OUTREACH STARTING", "INFO")
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
 
-    time.sleep(5)
     leads_resp = call_sheet({'action': 'get_leads'})
     all_leads  = leads_resp.get('leads', [])
     pending    = [l for l in all_leads
-                  if l.get('email') and '@' in str(l.get('email', ''))
-                  and l.get('email_sent') != 'sent']
+                  if l.get('email') and '@' in l['email'] and l.get('email_sent') != 'sent']
 
-    log(f"📨 {len(pending)} leads to email", "INFO")
+    log(f"📨 {len(pending)} leads with email addresses to contact", "INFO")
+
+    if not pending:
+        log("⚠️  No leads with emails found — check your collected leads", "WARN")
 
     for i, lead in enumerate(pending):
         if not automation_running:
-            log("⛔ Stopped", "WARN"); break
+            log("⛔ Stopped during email phase", "WARN")
+            break
+
         email_to = lead['email']
-        log(f"✉️  [{i+1}/{len(pending)}] → {email_to}", "INFO")
+        log(f"✉️  [{i+1}/{len(pending)}] Sending to {email_to}...", "INFO")
+
         subject, body = generate_email(tpl['subject'], tpl['body'], lead, groq_key)
+
         send_resp = call_sheet({
-            'action': 'send_email', 'to': email_to,
-            'subject': subject, 'body': body, 'lead_id': lead.get('id', '')
+            'action': 'send_email',
+            'to': email_to,
+            'subject': subject,
+            'body': body,
+            'lead_id': lead.get('id', '')
         })
+
         if send_resp.get('status') == 'ok':
-            log(f"   ✅ Sent → {email_to}", "SUCCESS")
+            log(f"   ✅ Email sent to {email_to}", "SUCCESS")
         else:
-            log(f"   ❌ Failed: {send_resp.get('message', send_resp)}", "ERROR")
+            log(f"   ❌ Send failed: {send_resp.get('message', send_resp)}", "ERROR")
+
         delay = random.randint(90, 150)
-        log(f"   ⏳ {delay}s...", "INFO")
+        log(f"   ⏳ Waiting {delay}s before next email...", "INFO")
         time.sleep(delay)
 
     log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
-    log("🎉 ALL DONE! Check Google Sheet.", "SUCCESS")
+    log("🎉 ALL DONE! Check your Google Sheet for leads.", "SUCCESS")
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
 
 
 # ── Flask routes ──────────────────────────────────────────────────────────────
+
 @app.route('/')
 def index():
     return render_template('index.html')
+
 
 @app.route('/api/status')
 def api_status():
@@ -523,10 +581,17 @@ def api_status():
             kws = kr.get('keywords', [])
             kw_total = len(kws)
             kw_used  = sum(1 for k in kws if k.get('status') == 'used')
-        except: pass
-    return jsonify({'running': automation_running, 'total_leads': total_leads,
-                    'emails_sent': emails_sent, 'kw_total': kw_total,
-                    'kw_used': kw_used, 'script_connected': bool(script_url)})
+        except:
+            pass
+    return jsonify({
+        'running': automation_running,
+        'total_leads': total_leads,
+        'emails_sent': emails_sent,
+        'kw_total': kw_total,
+        'kw_used': kw_used,
+        'script_connected': bool(script_url),
+    })
+
 
 @app.route('/api/logs/stream')
 def stream_logs():
@@ -540,11 +605,15 @@ def stream_logs():
     return Response(gen(), mimetype='text/event-stream',
                     headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
+
 @app.route('/api/sheet', methods=['POST'])
 def api_sheet():
-    if not os.environ.get('APPS_SCRIPT_URL', ''):
-        return jsonify({'error': 'APPS_SCRIPT_URL not set'})
-    return jsonify(call_sheet(request.json))
+    script_url = os.environ.get('APPS_SCRIPT_URL', '')
+    if not script_url:
+        return jsonify({'error': 'APPS_SCRIPT_URL not set in Render environment'})
+    result = call_sheet(request.json)
+    return jsonify(result)
+
 
 @app.route('/api/automation/start', methods=['POST'])
 def api_start():
@@ -555,6 +624,7 @@ def api_start():
     automation_thread.start()
     return jsonify({'status': 'started'})
 
+
 @app.route('/api/automation/stop', methods=['POST'])
 def api_stop():
     global automation_running
@@ -562,20 +632,23 @@ def api_stop():
     log("⛔ Stopped by user", "WARN")
     return jsonify({'status': 'stopped'})
 
+
 @app.route('/api/schedule', methods=['POST'])
 def api_schedule():
     data = request.json
+    run_time_str = data.get('time', '')
     try:
-        run_time = datetime.fromisoformat(data.get('time', ''))
+        run_time = datetime.fromisoformat(run_time_str)
         scheduler.add_job(
             func=lambda: threading.Thread(target=run_automation, daemon=True).start(),
             trigger='date', run_date=run_time,
             id='scheduled_run', replace_existing=True
         )
-        log(f"📅 Scheduled for {data['time']}", "INFO")
-        return jsonify({'status': 'scheduled', 'time': data['time']})
+        log(f"📅 Scheduled for {run_time_str}", "INFO")
+        return jsonify({'status': 'scheduled', 'time': run_time_str})
     except Exception as e:
         return jsonify({'status': 'error', 'msg': str(e)}), 400
+
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
