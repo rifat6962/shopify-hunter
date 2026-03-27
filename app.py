@@ -12,6 +12,13 @@ from datetime import datetime
 import logging
 import os
 
+# DuckDuckGo for Unlimited Free Searches
+try:
+    from duckduckgo_search import DDGS
+    DDGS_AVAILABLE = True
+except ImportError:
+    DDGS_AVAILABLE = False
+
 logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 
@@ -48,25 +55,78 @@ def log(message, level="INFO"):
 MYSHOPIFY_RE = re.compile(r'([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com')
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PHASE 1: FETCH STORES (Using SerpAPI to avoid IP Blocks)
+# NEW: AI KEYWORD GENERATOR (Multiplies 1 keyword into 100+ keywords)
 # ─────────────────────────────────────────────────────────────────────────────
-def get_store_urls(keyword, serpapi_key):
-    urls = set()
-    kw_clean = keyword.lower().replace(' ', '')
-    
-    log(f"🚀 SCRAPING MODE: Fetching stores for '{keyword}'...", "INFO")
+def generate_ai_keywords(base_keyword, groq_key):
+    log(f"🧠 Using AI to generate 100+ related keywords for '{base_keyword}'...", "INFO")
+    try:
+        prompt = f"""Generate a list of 100 highly specific e-commerce niche keywords related to '{base_keyword}'. 
+For example, if the keyword is 'shoes', return['sneakers', 'leather boots', 'running shoes', 'high heels', 'sports shoes', ...].
+Return ONLY a valid JSON array of strings. No markdown formatting, no explanations, no extra text."""
 
-    # SOURCE 1: SerpAPI (Google Search - Bypasses IP Blocks)
+        headers = {
+            "Authorization": f"Bearer {groq_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": "llama-3.1-8b-instant",
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 1500,
+            "temperature": 0.7
+        }
+        
+        r = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=30)
+        
+        if r.status_code == 200:
+            raw = r.json()['choices'][0]['message']['content']
+            raw = re.sub(r'```(?:json)?|```', '', raw.strip()).strip()
+            kw_list = json.loads(raw)
+            
+            if isinstance(kw_list, list) and len(kw_list) > 0:
+                log(f"   ✅ AI successfully generated {len(kw_list)} related keywords!", "SUCCESS")
+                return kw_list
+        else:
+            log(f"   ⚠️ AI Keyword generation failed. Using base keyword only.", "WARN")
+            
+    except Exception as e:
+        log(f"   ⚠️ AI Error: {e}. Using base keyword only.", "WARN")
+        
+    return[]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PHASE 1: REVERSE ENGINEERING SCRAPER (Find Broken Stores First)
+# ─────────────────────────────────────────────────────────────────────────────
+def get_broken_payment_stores(keyword, country, serpapi_key):
+    urls = set()
+    
+    # 🔥 THE MASTER DORKS 🔥
+    queries =[
+        f'site:myshopify.com "{keyword}" "isn\'t accepting payments right now"',
+        f'site:myshopify.com "{keyword}" "payment provider hasn\'t been set up"',
+        f'site:myshopify.com "{keyword}" "checkout is disabled"',
+        f'site:myshopify.com "{keyword}" "opening soon"'
+    ]
+
+    # ── SOURCE 1: DuckDuckGo (Unlimited & Free) ──
+    if DDGS_AVAILABLE:
+        try:
+            with DDGS() as ddgs:
+                for q in queries:
+                    if len(urls) > 200: break
+                    results = ddgs.text(q, max_results=50)
+                    if results:
+                        for r in results:
+                            m = MYSHOPIFY_RE.search(r.get('href', ''))
+                            if m: urls.add(f"https://{m.group(1)}.myshopify.com")
+                    time.sleep(1)
+        except Exception as e:
+            pass
+
+    # ── SOURCE 2: SerpAPI (Google Search) ──
     if serpapi_key:
-        log(f"   -> Scraping Google via SerpAPI...", "INFO")
-        queries =[
-            f'site:myshopify.com "{keyword}"',
-            f'site:myshopify.com intitle:"{keyword}"',
-            f'site:myshopify.com "{keyword}" "opening soon"'
-        ]
         for q in queries:
-            if len(urls) > 500: break
-            for start in [0, 100, 200]: # First 3 pages
+            if len(urls) > 300: break
+            for start in [0, 100]:
                 try:
                     params = {'api_key': serpapi_key, 'engine': 'google', 'q': q, 'num': 100, 'start': start}
                     res = requests.get('https://serpapi.com/search', params=params, timeout=15)
@@ -74,87 +134,15 @@ def get_store_urls(keyword, serpapi_key):
                         for item in res.json().get('organic_results',[]):
                             m = MYSHOPIFY_RE.search(item.get('link', ''))
                             if m: urls.add(f"https://{m.group(1)}.myshopify.com")
-                except Exception as e:
-                    pass
+                except Exception: pass
                 time.sleep(1)
-
-    # SOURCE 2: URLScan.io (Recent Stores)
-    log(f"   -> Scraping URLScan...", "INFO")
-    try:
-        urlscan_url = f"https://urlscan.io/api/v1/search/?q=domain:myshopify.com AND {kw_clean}&size=300&sort=time"
-        r = requests.get(urlscan_url, timeout=15)
-        if r.status_code == 200:
-            for res in r.json().get('results',[]):
-                page_url = res.get('page', {}).get('url', '')
-                m = MYSHOPIFY_RE.search(page_url)
-                if m: urls.add(f"https://{m.group(1)}.myshopify.com")
-    except Exception:
-        pass
-
-    # SOURCE 3: CommonCrawl (Massive Web Archive)
-    log(f"   -> Scraping CommonCrawl Archive...", "INFO")
-    try:
-        cc_url = f"https://index.commoncrawl.org/CC-MAIN-2024-10-index?url=*.myshopify.com/*{kw_clean}*&output=json&limit=300"
-        r = requests.get(cc_url, timeout=15)
-        if r.status_code == 200:
-            for line in r.text.strip().split('\n'):
-                try:
-                    data = json.loads(line)
-                    m = MYSHOPIFY_RE.search(data.get('url', ''))
-                    if m: urls.add(f"https://{m.group(1)}.myshopify.com")
-                except: pass
-    except Exception:
-        pass
 
     urls_list = list(urls)
     random.shuffle(urls_list)
-    log(f"📦 Found {len(urls_list)} raw stores to test!", "SUCCESS")
     return urls_list
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PHASE 2: SHOPIFY SCRAPER LOGIC (Strict 7-Days Age Check via products.json)
-# ─────────────────────────────────────────────────────────────────────────────
-def is_store_new_via_products(base_url, session, headers):
-    """
-    Uses the logic from practical-data-science/ShopifyScraper to fetch products.json
-    and determine the EXACT age of the store based on product creation dates.
-    """
-    try:
-        # Fetch up to 250 products (Shopify's max limit per page)
-        r = session.get(f"{base_url}/products.json?limit=250", headers=headers, timeout=10)
-        if r.status_code != 200:
-            return False, "No products.json found", None
-            
-        products = r.json().get('products',[])
-        if not products:
-            return True, "0 products (Brand new empty store)", None
-            
-        # Find the oldest product creation date
-        oldest_date = None
-        for p in products:
-            date_str = p.get('created_at') or p.get('published_at')
-            if date_str:
-                try:
-                    p_date = datetime.strptime(date_str[:10], '%Y-%m-%d')
-                    if oldest_date is None or p_date < oldest_date:
-                        oldest_date = p_date
-                except:
-                    pass
-                    
-        if oldest_date:
-            days_old = (datetime.now() - oldest_date).days
-            # 🚨 STRICT 7-DAYS FILTER
-            if days_old <= 7:
-                return True, f"Store is {days_old} days old", products[0]['variants'][0]['id']
-            else:
-                return False, f"Old store (Products from {days_old} days ago)", None
-                
-        return True, "Could not determine age, assuming new", products[0]['variants'][0]['id']
-    except Exception as e:
-        return False, f"Error checking age", None
-
-# ─────────────────────────────────────────────────────────────────────────────
-# PHASE 3: CHECKOUT HTML ANALYSIS
+# PHASE 2: VERIFY CHECKOUT & EXTRACT INFO (100% Accurate)
 # ─────────────────────────────────────────────────────────────────────────────
 def check_store_target(base_url, session, keyword):
     ua = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
@@ -167,27 +155,33 @@ def check_store_target(base_url, session, keyword):
 
     try:
         r = session.get(base_url, headers=headers, timeout=10, allow_redirects=True)
-        if r.status_code != 200: return {"is_shopify": False, "is_lead": False}
+        if r.status_code != 200:
+            return {"is_shopify": False, "is_lead": False}
             
         html_lower = r.text.lower()
         if 'shopify' not in html_lower and 'cdn.shopify.com' not in html_lower:
             return {"is_shopify": False, "is_lead": False}
 
-        # 🚨 PASSWORD CHECK
-        if '/password' in r.url or 'password-page' in html_lower or 'opening soon' in html_lower:
-            return {"is_shopify": True, "is_lead": False, "reason": "Password Protected (Skipping)"}
+        # 🚨 NICHE CHECK
+        kw_lower = keyword.lower().strip()
+        if kw_lower and kw_lower not in html_lower and kw_lower not in base_url:
+            return {"is_shopify": True, "is_lead": False, "reason": f"Keyword '{kw_lower}' not found"}
 
-        # 🔥 SHOPIFY SCRAPER LOGIC: Check exact store age 🔥
-        is_new, age_reason, variant_id = is_store_new_via_products(base_url, session, headers)
-        
-        if not is_new:
-            return {"is_shopify": True, "is_lead": False, "reason": age_reason}
-            
-        if not variant_id:
-            return {"is_shopify": True, "is_lead": False, "reason": "No products to add to cart"}
+        # 🚨 PASSWORD CHECK
+        if '/password' in r.url or 'password-page' in html_lower:
+            return {"is_shopify": True, "is_lead": False, "reason": "Password Protected (No email available)"}
 
         # The Checkout Test
         try:
+            prod_req = session.get(f"{base_url}/products.json?limit=1", headers=headers, timeout=10)
+            if prod_req.status_code != 200:
+                return {"is_shopify": True, "is_lead": False, "reason": "No products.json"}
+
+            products = prod_req.json().get('products',[])
+            if not products:
+                return {"is_shopify": True, "is_lead": False, "reason": "0 products, cannot test checkout"}
+
+            variant_id = products[0]['variants'][0]['id']
             session.post(f"{base_url}/cart/add.js",
                 json={"id": variant_id, "quantity": 1},
                 headers={**headers, 'Content-Type': 'application/json'}, timeout=10)
@@ -209,19 +203,15 @@ def check_store_target(base_url, session, keyword):
             payment_kws =['visa', 'mastercard', 'amex', 'american express', 'paypal', 'credit card', 'debit card', 'card number', 'stripe', 'klarna', 'afterpay', 'shop pay', 'apple pay', 'google pay']
             found_pay =[kw for kw in payment_kws if kw in chk_html]
             if found_pay:
-                return {"is_shopify": True, "is_lead": False, "reason": f"Payment Gateway Found: {found_pay[:2]}"}
+                return {"is_shopify": True, "is_lead": False, "reason": f"has payment: {found_pay[:2]}"}
 
             if base_url.replace('https://', '') in chk_req.url and '/checkout' not in chk_req.url:
                 return {"is_shopify": True, "is_lead": True, "reason": "Redirected from checkout = no payment"}
 
-            if any(s in chk_html for s in['contact information', 'shipping address', 'order summary']):
-                return {"is_shopify": True, "is_lead": True, "reason": "Checkout OK, but NO Card/Payment options found!"}
-
-            return {"is_shopify": True, "is_lead": False, "reason": "Inconclusive Checkout Page"}
+            return {"is_shopify": True, "is_lead": False, "reason": "Inconclusive"}
 
         except Exception as e:
-            return {"is_shopify": True, "is_lead": False, "reason": f"Checkout test failed"}
-            
+            return {"is_shopify": True, "is_lead": False, "reason": f"error: {e}"}
     except Exception:
         return {"is_shopify": False, "is_lead": False}
 
@@ -317,16 +307,16 @@ def _run():
     groq_key = cfg.get('groq_api_key', '').strip()
     min_leads = int(cfg.get('min_leads', 50) or 50)
 
-    if not serpapi_key:
-        log("❌ SerpAPI Key missing! Please add it in CFG screen.", "ERROR"); return
+    if not groq_key:
+        log("❌ Groq API Key missing!", "ERROR"); return
 
     log(f"✅ Config loaded | Target: {min_leads} leads", "INFO")
 
     kw_resp = call_sheet({'action': 'get_keywords'})
-    ready_kws = [k for k in kw_resp.get('keywords', []) if k.get('status') == 'ready']
+    ready_kws =[k for k in kw_resp.get('keywords', []) if k.get('status') == 'ready']
     if not ready_kws:
         log("❌ No READY keywords!", "ERROR"); return
-    log(f"🗝️  {len(ready_kws)} keywords ready", "INFO")
+    log(f"🗝️  {len(ready_kws)} base keywords ready", "INFO")
 
     tpl_resp = call_sheet({'action': 'get_templates'})
     templates = tpl_resp.get('templates',[])
@@ -339,7 +329,7 @@ def _run():
     total_leads = 0
 
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
-    log("🚀 PHASE 1 — SHOPIFY SCRAPER LOGIC (PRODUCTS.JSON)", "SUCCESS")
+    log("🚀 PHASE 1 — AI KEYWORD MULTIPLIER & SCRAPING", "SUCCESS")
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
 
     for kw_row in ready_kws:
@@ -347,66 +337,74 @@ def _run():
         if total_leads >= min_leads:
             log(f"🎯 Target reached! ({total_leads}/{min_leads})", "SUCCESS"); break
 
-        keyword  = kw_row.get('keyword', '')
-        country  = kw_row.get('country', '')
-        kw_id    = kw_row.get('id', '')
-        kw_leads = 0
+        base_keyword = kw_row.get('keyword', '')
+        country      = kw_row.get('country', '')
+        kw_id        = kw_row.get('id', '')
+        kw_leads     = 0
 
-        log(f"\n🎯 Keyword: [{keyword}] | Country: [{country}]", "INFO")
+        log(f"\n🎯 Base Keyword: [{base_keyword}] | Country: [{country}]", "INFO")
 
-        # 1. Fetch raw stores
-        store_urls = get_store_urls(keyword, serpapi_key)
+        # 🔥 1. Generate 100+ Keywords using AI 🔥
+        ai_keywords = generate_ai_keywords(base_keyword, groq_key)
+        
+        # Combine base keyword with AI generated keywords
+        search_keywords = [base_keyword] + ai_keywords
+        log(f"🚀 Starting massive scrape across {len(search_keywords)} related keywords...", "INFO")
 
-        if not store_urls:
-            log("⚠️  No stores found. Moving to next...", "WARN")
-            call_sheet({'action': 'mark_keyword_used', 'id': kw_id, 'leads_found': 0})
-            continue
+        # 🔥 2. Loop through ALL generated keywords 🔥
+        for sub_kw in search_keywords:
+            if not automation_running or total_leads >= min_leads: break
+            
+            log(f"\n🔎 Sub-Keyword: [{sub_kw}]", "INFO")
+            
+            store_urls = get_broken_payment_stores(sub_kw, country, serpapi_key)
 
-        log(f"🔍 Checking {len(store_urls)} stores: Age Check -> Add to Cart -> Checkout Test...", "INFO")
-
-        # 2. Check Checkout Page and Save Lead
-        for idx, url in enumerate(store_urls):
-            if not automation_running: break
-            if total_leads >= min_leads: break
-
-            try:
-                target_info = check_store_target(url, session, keyword)
-
-                if not target_info.get("is_shopify"):
-                    continue 
-
-                if not target_info.get("is_lead"):
-                    reason = target_info.get('reason', '')
-                    if "Keyword" not in reason:
-                        log(f"   [{idx+1}/{len(store_urls)}] 🚫 SKIP ({reason}) — {url}", "WARN")
-                    continue
-
-                # ✅ LEAD FOUND!
-                log(f"[{idx+1}/{len(store_urls)}] 🎯 100% MATCH: {target_info.get('reason')} — collecting info...", "SUCCESS")
-                
-                info = get_store_info(url, session)
-                
-                save_resp = call_sheet({
-                    'action': 'save_lead', 'store_name': info['store_name'],
-                    'url': url, 'email': info['email'] or '',
-                    'phone': info['phone'] or '', 'country': country, 'keyword': keyword
-                })
-                
-                if save_resp.get('error'):
-                    continue
-                if save_resp.get('status') == 'duplicate':
-                    log(f"   ⏭️  Duplicate", "INFO"); continue
-
-                total_leads += 1; kw_leads += 1
-                email_str = f"📧 {info['email']}" if info['email'] else "⚠ no email"
-                log(f"   ✅ LEAD #{total_leads} SAVED → {info['store_name']} | {email_str}", "SUCCESS")
-                time.sleep(random.uniform(1.5, 3))
-
-            except Exception as e:
+            if not store_urls:
                 continue
 
+            # 3. Verify Checkout HTML and Save Lead
+            for idx, url in enumerate(store_urls):
+                if not automation_running or total_leads >= min_leads: break
+
+                try:
+                    target_info = check_store_target(url, session, sub_kw)
+
+                    if not target_info.get("is_shopify"):
+                        continue 
+
+                    if not target_info.get("is_lead"):
+                        reason = target_info.get('reason', '')
+                        if "Keyword" not in reason:
+                            log(f"[{idx+1}/{len(store_urls)}] 🚫 SKIP ({reason}) — {url}", "WARN")
+                        continue
+
+                    # ✅ LEAD FOUND!
+                    log(f"[{idx+1}/{len(store_urls)}] 🎯 100% MATCH: {target_info.get('reason')} — collecting info...", "SUCCESS")
+                    
+                    info = get_store_info(url, session)
+                    
+                    save_resp = call_sheet({
+                        'action': 'save_lead', 'store_name': info['store_name'],
+                        'url': url, 'email': info['email'] or '',
+                        'phone': info['phone'] or '', 'country': country, 'keyword': base_keyword
+                    })
+                    
+                    if save_resp.get('error'):
+                        continue
+                    if save_resp.get('status') == 'duplicate':
+                        log(f"   ⏭️  Duplicate", "INFO"); continue
+
+                    total_leads += 1; kw_leads += 1
+                    email_str = f"📧 {info['email']}" if info['email'] else "⚠ no email"
+                    log(f"   ✅ LEAD #{total_leads} SAVED → {info['store_name']} | {email_str}", "SUCCESS")
+                    time.sleep(random.uniform(1.5, 3))
+
+                except Exception as e:
+                    continue
+
+        # Mark the base keyword as used after checking all sub-keywords
         call_sheet({'action': 'mark_keyword_used', 'id': kw_id, 'leads_found': kw_leads})
-        log(f"✅ '{keyword}' done → {kw_leads} leads found", "SUCCESS")
+        log(f"✅ Base '{base_keyword}' done → {kw_leads} leads found across all sub-keywords", "SUCCESS")
 
     # ── PHASE 3: Email outreach ───────────────────────────────────────────────
     log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
@@ -416,7 +414,7 @@ def _run():
 
     time.sleep(10)
     leads_resp = call_sheet({'action': 'get_leads'})
-    all_leads  = leads_resp.get('leads', []) if not leads_resp.get('error') else[]
+    all_leads  = leads_resp.get('leads',[]) if not leads_resp.get('error') else []
     pending    =[l for l in all_leads if l.get('email') and '@' in str(l.get('email','')) and l.get('email_sent') != 'sent']
     
     log(f"📨 {len(pending)} leads with email addresses to contact", "INFO")
