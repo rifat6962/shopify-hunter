@@ -6,9 +6,7 @@ import json
 import re
 import random
 import requests
-import concurrent.futures
 from bs4 import BeautifulSoup
-from groq import Groq
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime, timedelta
 import logging
@@ -59,100 +57,78 @@ def log(message, level="INFO"):
 MYSHOPIFY_RE = re.compile(r'([a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.myshopify\.com')
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PHASE 1: ANTI-BLOCK SCRAPER (CyberSec APIs + Smart Generator)
+# PHASE 1: BRAVE SEARCH SCRAPER (Bypasses Google Blocks)
 # ─────────────────────────────────────────────────────────────────────────────
-def check_alive(url):
-    """Fast ping to check if a generated URL is alive"""
-    try:
-        r = requests.head(url, timeout=3, allow_redirects=True)
-        if r.status_code < 400:
-            return url
-    except:
-        pass
-    return None
+def scrape_brave_search(keyword, country):
+    """
+    Brave Search Engine ব্যবহার করে সরাসরি শপিফাই স্টোর স্ক্র্যাপ করবে।
+    """
+    urls = set()
+    log(f"🚀 BRAVE SEARCH MODE: Fetching stores for '{keyword}'...", "INFO")
 
-def find_shopify_stores(keyword, serpapi_key):
-    all_urls = set()
-    kw_clean = keyword.lower().replace(' ', '').replace('-', '')
-    
-    log(f"🚀 ANTI-BLOCK MODE: Fetching stores for '{keyword}'...", "INFO")
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Referer': 'https://search.brave.com/'
+    }
 
-    # ── SOURCE 1: URLScan.io (Recently scanned stores) ──
-    log(f"   -> Checking URLScan (Recent Stores)...", "INFO")
-    try:
-        urlscan_url = f"https://urlscan.io/api/v1/search/?q=domain:myshopify.com AND date:>now-7d&size=1000"
-        r = requests.get(urlscan_url, timeout=15)
-        if r.status_code == 200:
-            for res in r.json().get('results', []):
-                page_url = res.get('page', {}).get('url', '')
-                m = MYSHOPIFY_RE.search(page_url)
-                if m and kw_clean in m.group(1).lower():
-                    all_urls.add(f"https://{m.group(1)}.myshopify.com")
-    except Exception: pass
+    # Smart Dorks for Brave
+    queries = [
+        f'site:myshopify.com "{keyword}" "opening soon"',
+        f'site:myshopify.com "{keyword}" "isn\'t accepting payments right now"',
+        f'site:myshopify.com "{keyword}" {country}',
+        f'site:myshopify.com "{keyword}"'
+    ]
 
-    # ── SOURCE 2: AlienVault OTX (Passive DNS) ──
-    log(f"   -> Checking AlienVault OTX...", "INFO")
-    try:
-        r = requests.get("https://otx.alienvault.com/api/v1/indicators/domain/myshopify.com/passive_dns", timeout=15)
-        if r.status_code == 200:
-            for entry in r.json().get('passive_dns', []):
-                h = entry.get('hostname', '').lower()
-                if h.endswith('.myshopify.com') and kw_clean in h:
-                    all_urls.add(f"https://{h}")
-    except Exception: pass
+    session = requests.Session()
 
-    # ── SOURCE 3: CertSpotter (New SSLs) ──
-    log(f"   -> Checking CertSpotter (New SSLs)...", "INFO")
-    try:
-        r = requests.get('https://api.certspotter.com/v1/issuances?domain=myshopify.com&include_subdomains=true&expand=dns_names&match_wildcards=false', timeout=15)
-        if r.status_code == 200:
-            for cert in r.json():
-                for name in cert.get('dns_names', []):
-                    if name.endswith('.myshopify.com') and kw_clean in name.lower():
-                        all_urls.add(f"https://{name}")
-    except Exception: pass
+    for q in queries:
+        if len(urls) > 300: break
+        log(f"   -> Searching Brave for: {q}", "INFO")
+        
+        # Brave uses 'offset' for pagination (0, 1, 2, 3...)
+        for offset in range(0, 5): # Scrape 5 pages per query
+            try:
+                encoded_q = urllib.parse.quote_plus(q)
+                brave_url = f"https://search.brave.com/search?q={encoded_q}&offset={offset}&source=web"
+                
+                r = session.get(brave_url, headers=headers, timeout=15)
+                
+                if r.status_code == 200:
+                    soup = BeautifulSoup(r.text, 'html.parser')
+                    found_in_page = 0
+                    
+                    # Find all links in Brave search results
+                    for a in soup.find_all('a', href=True):
+                        m = MYSHOPIFY_RE.search(a['href'])
+                        if m:
+                            urls.add(f"https://{m.group(1)}.myshopify.com")
+                            found_in_page += 1
+                            
+                    # Also check plain text for URLs
+                    for m in MYSHOPIFY_RE.finditer(r.text):
+                        urls.add(f"https://{m.group(1)}.myshopify.com")
+                        found_in_page += 1
+                        
+                    if found_in_page == 0:
+                        break # No more results on this page, move to next query
+                        
+                elif r.status_code == 429:
+                    log(f"   ⚠️ Brave Rate Limited (429). Waiting 10 seconds...", "WARN")
+                    time.sleep(10)
+                    break
+                else:
+                    log(f"   ⚠️ Brave returned status {r.status_code}", "WARN")
+                    
+            except Exception as e:
+                pass
+            
+            time.sleep(random.uniform(2, 4)) # Anti-ban delay between pages
 
-    # ── SOURCE 4: SerpAPI (If available, bypasses IP blocks) ──
-    if serpapi_key:
-        log(f"   -> Checking Google via SerpAPI (Past Week Filter)...", "INFO")
-        queries = [
-            f'site:myshopify.com "{keyword}" "opening soon"',
-            f'site:myshopify.com "{keyword}" "isn\'t accepting payments right now"',
-            f'site:myshopify.com "{keyword}"'
-        ]
-        for q in queries:
-            if len(all_urls) > 500: break
-            for start in [0, 100]:
-                try:
-                    params = {'api_key': serpapi_key, 'engine': 'google', 'q': q, 'num': 100, 'start': start, 'tbs': 'qdr:w'}
-                    res = requests.get('https://serpapi.com/search', params=params, timeout=15)
-                    if res.status_code == 200:
-                        for item in res.json().get('organic_results', []):
-                            m = MYSHOPIFY_RE.search(item.get('link', ''))
-                            if m: all_urls.add(f"https://{m.group(1)}.myshopify.com")
-                except Exception: pass
-                time.sleep(1)
-
-    # ── SOURCE 5: Smart Generator (Fast Ping) ──
-    log(f"   -> Generating & Pinging targeted store links...", "INFO")
-    prefixes = ['', 'my', 'the', 'shop', 'buy', 'best', 'new', 'official', 'top', 'pro', 'all']
-    suffixes = ['', 'shop', 'store', 'online', 'co', 'boutique', 'hub', 'spot', 'deals', 'mart']
-    generated = set()
-    for p in prefixes:
-        for s in suffixes:
-            generated.add(f"https://{p}{kw_clean}{s}.myshopify.com")
-            generated.add(f"https://{kw_clean}{p}{s}.myshopify.com")
-            if p and s: generated.add(f"https://{p}-{kw_clean}-{s}.myshopify.com")
-
-    # Fast ping using 50 concurrent workers
-    with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
-        results = executor.map(check_alive, generated)
-        for res in results:
-            if res: all_urls.add(res)
-
-    urls_list = list(all_urls)
+    urls_list = list(urls)
     random.shuffle(urls_list)
-    log(f"📦 Found {len(urls_list)} potential stores to test!", "SUCCESS")
+    log(f"📦 Brave Search found {len(urls_list)} potential stores to test!", "SUCCESS")
     return urls_list
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -335,12 +311,8 @@ def _run():
         log(f"❌ Apps Script: {cfg_resp['error']}", "ERROR"); return
 
     cfg = cfg_resp.get('config', {})
-    serpapi_key = cfg.get('serpapi_key', '').strip()
     groq_key = cfg.get('groq_api_key', '').strip()
     min_leads = int(cfg.get('min_leads', 50) or 50)
-
-    if not groq_key:
-        log("❌ Groq API Key missing!", "ERROR"); return
 
     log(f"✅ Config loaded | Target: {min_leads} leads", "INFO")
 
@@ -361,7 +333,7 @@ def _run():
     total_leads = 0
 
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
-    log("🚀 PHASE 1 — ANTI-BLOCK SCRAPING & AGE VERIFICATION", "SUCCESS")
+    log("🚀 PHASE 1 — BRAVE SEARCH SCRAPING & CHECKOUT TEST", "SUCCESS")
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "INFO")
 
     for kw_row in ready_kws:
@@ -376,8 +348,8 @@ def _run():
 
         log(f"\n🎯 Keyword: [{keyword}] | Country: [{country}]", "INFO")
 
-        # 1. Scrape stores (Bypassing Google Blocks)
-        store_urls = find_shopify_stores(keyword, serpapi_key)
+        # 1. Scrape stores using Brave Search
+        store_urls = scrape_brave_search(keyword, country)
 
         if not store_urls:
             log("⚠️  No stores found. Moving to next...", "WARN")
